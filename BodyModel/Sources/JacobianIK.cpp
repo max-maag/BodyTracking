@@ -34,7 +34,7 @@ void JacobianIK::iterate(BoneNode* targetBone, Kore::vec3 desPosition, Kore::Qua
 		
 	applyChanges(deltaTheta, targetBone);
 	targetBone->applyJointConstraints();
-	/*
+	
 	// update chain from root to end effector
 	std::vector<BoneNode*> chain;
 	chain.reserve(10);
@@ -45,11 +45,6 @@ void JacobianIK::iterate(BoneNode* targetBone, Kore::vec3 desPosition, Kore::Qua
 
 	for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit) {
 		(*rit)->update();
-	}
-	*/
-
-	for (BoneNode* bone : bones) {
-		bone->update();
 	}
 }
 
@@ -71,8 +66,4 @@ void JacobianIK::applyChanges(std::vector<float> deltaTheta, BoneNode* targetBon
 		
 		bone = bone->parent;
 	}
-}
-
-void JacobianIK::setBones(std::vector<BoneNode*> bones) {
-	this->bones = bones;
 }

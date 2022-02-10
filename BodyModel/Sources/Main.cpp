@@ -939,10 +939,7 @@ void record() {
 
 		avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
 
-		for (auto solver : IK_SOLVERS) {
-			std::static_pointer_cast<JacobianIK, IKSolver>(solver)->setBones(avatar->bones);
-		}
-		//avatar = new Avatar("avatar/avatar_female.ogex", "avatar/", structure);
+		//avatar = new Avatar("avatar/avatar_female.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
 		
 		// Set camera initial position and orientation
 		cameraPos = vec3(2.6, 1.8, 0.0);

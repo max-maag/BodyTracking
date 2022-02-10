@@ -18,8 +18,6 @@ public:
 		float thresholdTargetReachedPosition,
 		float thresholdTargetReachedRotation);
 
-	void setBones(std::vector<BoneNode*> bones);
-
 protected:
 	void iterate(BoneNode* targetBone, Kore::vec3 desPosition, Kore::Quaternion desRotation) override;
 
