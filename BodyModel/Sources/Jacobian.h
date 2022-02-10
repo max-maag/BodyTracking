@@ -1,18 +1,19 @@
 #include "MeshObject.h"
 #include "BussIK/MatrixRmn.h"
 #include "EndEffector.h"
+#include "Settings.h"
+#include "JacobianIKMode.h"
 
 #include <Kore/Log.h>
 
 struct BoneNode;
 
-extern int ikMode;
 extern float lambda[];
 
 template<int nJointDOFs = 6> class Jacobian {
 	
 public:
-	std::vector<float> calcDeltaTheta(BoneNode* endEffektor, Kore::vec3 pos_soll, Kore::Quaternion rot_soll, int ikMode) {
+	std::vector<float> calcDeltaTheta(BoneNode* endEffektor, Kore::vec3 pos_soll, Kore::Quaternion rot_soll, JacobianIKMode ikMode) {
 		
 		std::vector<float> deltaTheta;
 		vec_n vec;
@@ -25,19 +26,19 @@ public:
 			errorRot = Kore::vec3(deltaP[3], deltaP[4], deltaP[5]).getLength();
 		
 		switch (ikMode) {
-			case JPI:
+			case JacobianIKMode::JPI:
 				vec = calcDeltaThetaByPseudoInverse(jacobian, deltaP);
 				break;
-			case DLS:
+			case JacobianIKMode::DLS:
 				vec = calcDeltaThetaByDLS(jacobian, deltaP);
 				break;
-			case SVD:
+			case JacobianIKMode::SVD:
 				vec = calcDeltaThetaBySVD(jacobian, deltaP);
 				break;
-			case SVD_DLS:
+			case JacobianIKMode::SVD_DLS:
 				vec = calcDeltaThetaByDLSwithSVD(jacobian, deltaP);
 				break;
-			case SDLS:
+			case JacobianIKMode::SDLS:
 				vec = calcDeltaThetaBySDLS(jacobian, deltaP);
 				break;
 				
@@ -117,7 +118,7 @@ private:
 		
 		mat_nxm dls;
 		for (int i = 0; i < Min(nDOFs, nJointDOFs); ++i) {
-			//if (fabs(d[i]) > nearNull) {
+			//if (fabs(d[i]) > Settings::nearNull) {
 				float l = d[i] / (Square(d[i]) + Square(lambda[4]));
 				
 				for (int n = 0; n < nJointDOFs; ++n)
@@ -145,10 +146,10 @@ private:
 			float N_i = u_i.getLength();
 			
 			if (
-				fabs(d[i]) > nearNull &&
-				N_i > nearNull &&
-				fabs(alpha_i) > nearNull &&
-				lambda[5] > nearNull
+				fabs(d[i]) > Settings::nearNull &&
+				N_i > Settings::nearNull &&
+				fabs(alpha_i) > Settings::nearNull &&
+				lambda[5] > Settings::nearNull
 				) {
 				float omegaInverse_i = 1.0 / d[i];
 				
@@ -266,13 +267,13 @@ private:
 		if (nDOFs <= nJointDOFs) { // m <= n
 			// Left Damped pseudo-inverse
 			Jacobian::mat_nxn id;
-			if (l > nearNull) id = Jacobian::mat_nxn::Identity() * Square(l);
+			if (l > Settings::nearNull) id = Jacobian::mat_nxn::Identity() * Square(l);
 			
 			pseudoInverse = (transpose * jacobian + id).Invert() * transpose;
 		} else {
 			// Right Damped pseudo-inverse
 			Jacobian::mat_mxm id;
-			if (l > nearNull) id = Jacobian::mat_mxm::Identity() * Square(l);
+			if (l > Settings::nearNull) id = Jacobian::mat_mxm::Identity() * Square(l);
 			
 			pseudoInverse = transpose * (jacobian * transpose + id).Invert();
 		}

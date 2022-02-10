@@ -8,6 +8,7 @@
 
 #include <vector>
 #include <map>
+#include <algorithm>
 
 struct Mesh {
 	int numFaces;
@@ -98,6 +99,13 @@ struct BoneNode {
 	// Constraints
 	Kore::vec3 axes;
 	std::map<const char* const, float> constrain;	// <min, max>
+
+	static const char* const xMin;
+	static const char* const xMax;
+	static const char* const yMin;
+	static const char* const yMax;
+	static const char* const zMin;
+	static const char* const zMax;
 	
 	BoneNode() :
 		transform(Kore::mat4::Identity()),
@@ -127,6 +135,53 @@ struct BoneNode {
 		Kore::RotationUtility::getOrientation(&combined, &result);
 		
 		return result;
+	}
+
+	void update() {
+		if (parent->initialized)
+			combined = parent->combined * local;
+	}
+
+	void initialize() {
+		update();
+
+		if (!initialized) {
+			initialized = true;
+			combinedInv = combined.Invert();
+		}
+
+		finalTransform = combined * combinedInv;
+	}
+
+	void applyJointConstraints() {
+		BoneNode* bone = this;
+		while (bone->initialized) {
+			Kore::vec3 axes = bone->axes;
+
+			Kore::vec3 rot;
+			Kore::RotationUtility::quatToEuler(&bone->rotation, &rot.x(), &rot.y(), &rot.z());
+
+			float x = rot.x(), y = rot.y(), z = rot.z();
+
+			if (axes.x() == 1.0) {
+				x = std::clamp(x, bone->constrain[BoneNode::xMin], bone->constrain[BoneNode::xMax]);
+			}
+
+			if (axes.y() == 1.0) {
+				y = std::clamp(y, bone->constrain[BoneNode::yMin], bone->constrain[BoneNode::yMax]);
+			}
+
+			if (axes.z() == 1.0) {
+				z = std::clamp(z, bone->constrain[BoneNode::zMin], bone->constrain[BoneNode::zMax]);
+			}
+
+			Kore::RotationUtility::eulerToQuat(x, y, z, &bone->rotation);
+
+			// bone->rotation = Kore::Quaternion((double) x, (double) y, (double) z, 1);
+			bone->rotation.normalize();
+			bone->local = bone->transform * bone->rotation.matrix().Transpose();
+			bone = bone->parent;
+		}
 	}
 };
 

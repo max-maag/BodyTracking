@@ -7,7 +7,6 @@
 #include <string>
 #include <ctime>
 
-extern int ikMode;
 extern float lambda[];
 extern float errorMaxPos[];
 extern float errorMaxRot[];
@@ -96,11 +95,11 @@ void Logger::analyseHMM(const char* hmmName, double probability, bool newLine) {
 	hmmAnalysisWriter.flush();
 }
 
-void Logger::saveEvaluationData(const char* filename, const float* iterations, float meanErrorPos, float stdErrorPos, float meanErrorRot, float stdErrorRot, const float* time, const float* timeIteration, float reached, float stucked, const float* errorHead, const float* errorHip, const float* errorLeftHand, const float* errorLeftForeArm, const float* errorRightHand, const float* errorRightForeArm, const float* errorLeftFoot, const float* errorRightFoot, const float* errorLeftKnee, const float* errorRightKnee) {
+void Logger::saveEvaluationData(std::string filename, std::shared_ptr<const IKSolver> solver, IKEvaluator::RunStatsAverage ikStatsTotal, std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector) {
 	
 	// Save settings
 	char evaluationDataPath[100];
-	sprintf(evaluationDataPath, "eval/evaluationData_IK_%i_%s", ikMode, filename);
+	sprintf(evaluationDataPath, "eval/evaluationData_IK_%s_%s", solver->getName().data(), filename.c_str());
 	
 	if (!evaluationDataOutputFile.is_open()) {
 		evaluationDataOutputFile.open(evaluationDataPath, std::ios::app);
@@ -126,34 +125,48 @@ void Logger::saveEvaluationData(const char* filename, const float* iterations, f
 	}
 	
 	// Save settings
-	log(Kore::Info, "%s \t IK: %i \t lambda: %f \t errorMaxPos: %f \t errorMaxRot: %f \t maxIterations: %f", filename, ikMode, lambda[ikMode], errorMaxPos[ikMode], errorMaxRot[ikMode], maxIterations[ikMode]);
-	evaluationDataOutputFile << ikMode << ";" << filename << ";" << lambda[ikMode] << ";" << errorMaxPos[ikMode] << ";" << errorMaxRot[ikMode] << ";" << maxIterations[ikMode] << ";";
+	log(
+		Kore::Info,
+		"%s \t IK: %s \t lambda: ? \t errorMaxPos: %f \t errorMaxRot: %f \t maxIterations: %f",
+		filename,
+		solver->getName(),
+		solver->getThresholdTargetReachedPosition(),
+		solver->getThresholdTargetReachedRotation(),
+		solver->getNumIterationsMax()
+	);
+
+	evaluationDataOutputFile << solver->getName()  << ";" << filename << ";" << "nan" << ";" << solver->getThresholdTargetReachedPosition() << ";" << solver->getThresholdTargetReachedRotation() << ";" << solver->getNumIterationsMax() << ";";
 
 	// Save mean and std for iterations
-	evaluationDataOutputFile << iterations[0] << ";" << iterations[1] << ";";
+	evaluationDataOutputFile << ikStatsTotal.numIterations.average << ";" << ikStatsTotal.numIterations.deviation << ";";
 
 	// Save mean and std for pos and rot error
-	evaluationDataOutputFile << meanErrorPos << ";" << stdErrorPos << ";";
-	evaluationDataOutputFile << meanErrorRot << ";" << stdErrorRot << ";";
+	evaluationDataOutputFile << ikStatsTotal.errorPositionMm.average << ";" << ikStatsTotal.errorPositionMm.deviation << ";";
+	evaluationDataOutputFile << ikStatsTotal.errorRotation.average << ";" << ikStatsTotal.errorRotation.deviation << ";";
 	
 	// Save time
-	evaluationDataOutputFile << timeIteration[0] << ";" << timeIteration[1] << ";";
-	evaluationDataOutputFile << time[0] << ";" << time[1] << ";";
+	evaluationDataOutputFile << ikStatsTotal.durationAveragePerIterationMs.average << ";" << ikStatsTotal.durationAveragePerIterationMs.deviation << ";";
+	evaluationDataOutputFile << ikStatsTotal.durationsMs.average << ";" << ikStatsTotal.durationsMs.average << ";";
 
 	// Reached & stucked
-	evaluationDataOutputFile << reached << ";" << stucked << ";";
+	evaluationDataOutputFile << ikStatsTotal.targetReachedPercent << ";" << ikStatsTotal.stuckPercent << ";";
 	
 	// Save results for each individual bone
-	evaluationDataOutputFile << errorHead[0] << ";" << errorHead[1] << ";" << errorHead[2] << ";" << errorHead[3] << ";";
-	evaluationDataOutputFile << errorHip[0] << ";" << errorHip[1] << ";" << errorHip[2] << ";" << errorHip[3] << ";";
-	evaluationDataOutputFile << errorLeftHand[0] << ";" << errorLeftHand[1] << ";" << errorLeftHand[2] << ";" << errorLeftHand[3] << ";";
-	evaluationDataOutputFile << errorLeftForeArm[0] << ";" << errorLeftForeArm[1] << ";" << errorLeftForeArm[2] << ";" << errorLeftForeArm[3] << ";";
-	evaluationDataOutputFile << errorRightHand[0] << ";" << errorRightHand[1] << ";" << errorRightHand[2] << ";" << errorRightHand[3] << ";";
-	evaluationDataOutputFile << errorRightForeArm[0] << ";" << errorRightForeArm[1] << ";" << errorRightForeArm[2] << ";" << errorRightForeArm[3] << ";";
-	evaluationDataOutputFile << errorLeftFoot[0] << ";" << errorLeftFoot[1] << ";" << errorLeftFoot[2] << ";" << errorLeftFoot[3] << ";";
-	evaluationDataOutputFile << errorRightFoot[0] << ";" << errorRightFoot[1] << ";" << errorRightFoot[2] << ";" << errorRightFoot[3] << ";";
-	evaluationDataOutputFile << errorLeftKnee[0] << ";" << errorLeftKnee[1] << ";" << errorLeftKnee[2] << ";" << errorLeftKnee[3] << ";";
-	evaluationDataOutputFile << errorRightKnee[0] << ";" << errorRightKnee[1] << ";" << errorRightKnee[2] << ";" << errorRightKnee[3] << "\n";
+
+	
+	for (size_t idxEndEffector = 0; idxEndEffector < numEndEffectors; idxEndEffector++) {
+		IKEvaluator::RunStatsAverage& ikEE = ikStatsPerEndEffector[idxEndEffector];
+
+		evaluationDataOutputFile << ikEE.errorPositionMm.average << ";" << ikEE.errorPositionMm.deviation << ";"
+			<< ikEE.errorRotation.average << ";" << ikEE.errorRotation.deviation;
+
+		if (idxEndEffector < numEndEffectors - 1) {
+			evaluationDataOutputFile << ";";
+		}
+		else {
+			evaluationDataOutputFile << "\n";
+		}
+	}
 	
 	evaluationDataOutputFile.flush();
 }
@@ -165,6 +178,10 @@ void Logger::endEvaluationLogger() {
 	log(Kore::Info, "Stop eval-logging!");
 }
 
+/* Reads scale as well as one positionand rotation for each end effector from file.
+
+   Returns true iff file contains more unread data.
+ */ 
 bool Logger::readData(const int numOfEndEffectors, const char* filename, Kore::vec3* rawPos, Kore::Quaternion* rawRot, EndEffectorIndices indices[], float& scale) {
 	std::string tag;
 	float posX, posY, posZ;

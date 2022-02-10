@@ -1,5 +1,7 @@
 #include "pch.h"
 
+#include <optional>
+#include <array>
 #include <Kore/IO/FileReader.h>
 #include <Kore/Graphics4/PipelineState.h>
 #include <Kore/Graphics1/Color.h>
@@ -17,6 +19,7 @@
 #include "Avatar.h"
 #include "LivingRoom.h"
 #include "Logger.h"
+#include "JacobianIK.h"
 
 #include <algorithm> // std::sort, std::copy
 
@@ -32,8 +35,7 @@
 using namespace Kore;
 using namespace Kore::Graphics4;
 
-// Dynamic IK parameters
-int ikMode = 2;
+
 //							JT = 0			JPI = 1		DLS = 2		SVD = 3		SVD_DLS = 4		SDLS = 5
 // Uncomment this to evaluate lambda
 float lambda[6] 			= { 1.0f,		1.0f,		0.05f,		1.0f,		0.05f,			Kore::pi / 120.0f };
@@ -58,10 +60,24 @@ float* evalValue			= lambda;
 const float evalStep[6]		= { 0.0f,		0.0f,		0.0f,		0.0f,		0.0f,			0.0f };
 const float evalMaxValue[6] = { 1.0f,		1.0f,		0.25f,		1.0f,		0.25f,			1.0f / 12.0f * Kore::pi };
 float maxIterations[6]		= { 200.0f,		200.0f,		200.0f,		200.0f,		200.0f,			200.0f };*/
+
 float errorMaxPos[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f	};
 float errorMaxRot[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f	};
 
 namespace {
+	const std::array<std::shared_ptr<IKSolver>, 6> IK_SOLVERS {
+		std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
+		std::make_shared<JacobianIK>(JacobianIKMode::JPI,		4000,	0.1,	0.1),
+		std::make_shared<JacobianIK>(JacobianIKMode::DLS,		20,		0.001,	0.01),
+		std::make_shared<JacobianIK>(JacobianIKMode::SVD,		10,		0.01,	0.01),
+		std::make_shared<JacobianIK>(JacobianIKMode::SVD_DLS,	20,		0.001,	0.01),
+		std::make_shared<JacobianIK>(JacobianIKMode::SDLS,		20,		0.01,	0.01)
+	};
+
+
+	size_t ikMode = 2;
+	size_t currentFile = 0;
+
 	const int width = 1024;
 	const int height = 768;
 	
@@ -133,6 +149,8 @@ namespace {
 	mat4 initTransInv;
 	Kore::Quaternion initRot;
 	Kore::Quaternion initRotInv;
+
+	std::optional<std::array<IKEvaluator, numEndEffectors>> ikEvaluators = Settings::eval ? std::make_optional(std::array<IKEvaluator, numEndEffectors>()) : std::nullopt;
 	
 	bool calibratedAvatar = false;
 	
@@ -204,7 +222,7 @@ namespace {
 			Kore::vec3 desPosition = endEffector[i]->getDesPosition();
 			Kore::Quaternion desRotation = endEffector[i]->getDesRotation();
 			
-			if (i == hip || (!simpleIK && i == leftForeArm) || (!simpleIK && i == rightForeArm) || i == leftFoot || i == rightFoot) {
+			if (i == hip || (!Settings::simpleIK && i == leftForeArm) || (!Settings::simpleIK && i == rightForeArm) || i == leftFoot || i == rightFoot) {
 				renderControllerAndTracker(true, desPosition, desRotation);
 			} else if (i == rightHand || i == leftHand) {
 				renderControllerAndTracker(false, desPosition, desRotation);
@@ -266,13 +284,19 @@ namespace {
 		mat4 V = mat4::lookAlong(camForward.xyz(), cameraPos, vec3(0.0f, 1.0f, 0.0f));
 		return V;
 	}
+
+	IKEvaluator* getIkEvaluator(int endEffectorID) {
+		return ikEvaluators ? &(ikEvaluators.value()[endEffectorID]) : nullptr;
+	}
 	
 	void executeMovement(int endEffectorID) {
 		Kore::vec3 desPosition = endEffector[endEffectorID]->getDesPosition();
 		Kore::Quaternion desRotation = endEffector[endEffectorID]->getDesRotation();
 
 		// Save raw data
-		if (logRawData) logger->saveData(endEffector[endEffectorID]->getName(), desPosition, desRotation, avatar->scale);
+		if (Settings::logRawData) {
+			logger->saveData(endEffector[endEffectorID]->getName(), desPosition, desRotation, avatar->scale);
+		}
 		
 		if (calibratedAvatar) {
 			// Transform desired position/rotation to the character local coordinate system
@@ -291,23 +315,19 @@ namespace {
 			if (endEffectorID == hip) {
 				avatar->setFixedPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot);
 			} else if (endEffectorID == head) {
-				avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), endEffector[endEffectorID]->getIKMode(), finalPos, finalRot);
+				avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
 			} else if (endEffectorID == leftForeArm || endEffectorID == rightForeArm) {
-				if (!simpleIK)
-					avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), endEffector[endEffectorID]->getIKMode(), finalPos, finalRot);
+				if (!Settings::simpleIK)
+					avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
 			} else if (endEffectorID == leftFoot || endEffectorID == rightFoot) {
-				avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), endEffector[endEffectorID]->getIKMode(), finalPos, finalRot);
+				avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
 			} else if (endEffectorID == leftHand || endEffectorID == rightHand) {
-				if (simpleIK) {
-					avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), endEffector[endEffectorID]->getIKMode(), finalPos, finalRot);
+				if (Settings::simpleIK) {
+					avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
 				} else {
 					avatar->setFixedOrientation(endEffector[endEffectorID]->getBoneIndex(), finalRot);
 				}
 			}
-			
-			// Evaluate IK precision
-			if (eval) endEffector[endEffectorID]->getError(avatar->getBoneWithIndex(endEffector[endEffectorID]->getBoneIndex()));
-			
 		}
 	}
 	
@@ -351,9 +371,9 @@ namespace {
 	}
 	
 void record() {
-	logRawData = !logRawData;
+	Settings::logRawData = !Settings::logRawData;
 	
-	if (logRawData) {
+	if (Settings::logRawData) {
 		Audio1::play(startRecordingSound);
 		logger->startLogger("logData");
 	} else {
@@ -613,8 +633,8 @@ void record() {
 			EndEffectorIndices indices[numOfEndEffectors];
 			Kore::vec3 desPosition[numOfEndEffectors];
 			Kore::Quaternion desRotation[numOfEndEffectors];
-			if (currentFile < numFiles) {
-				bool dataAvailable = logger->readData(numOfEndEffectors, files[currentFile], desPosition, desRotation, indices, scaleFactor);
+			if (currentFile < Settings::files.size()) {
+				bool dataAvailable = logger->readData(numOfEndEffectors, Settings::files[currentFile].c_str(), desPosition, desRotation, indices, scaleFactor);
 
 				if (dataAvailable) {
 					for (int i = 0; i < numOfEndEffectors; ++i) {
@@ -630,19 +650,10 @@ void record() {
 					calibrate();
 					calibratedAvatar = true;
 
-					if (eval) {
-						avatar->resetVariables();
-
-						endEffector[head]->resetEvalVariables();
-						endEffector[hip]->resetEvalVariables();
-						endEffector[leftHand]->resetEvalVariables();
-						endEffector[leftForeArm]->resetEvalVariables();
-						endEffector[rightHand]->resetEvalVariables();
-						endEffector[rightForeArm]->resetEvalVariables();
-						endEffector[leftFoot]->resetEvalVariables();
-						endEffector[rightFoot]->resetEvalVariables();
-						endEffector[leftKnee]->resetEvalVariables();
-						endEffector[rightKnee]->resetEvalVariables();
+					if (Settings::eval) {
+						for (auto& evaluator : ikEvaluators.value()) {
+							evaluator.clear();
+						}
 					}
 				}
 
@@ -652,53 +663,74 @@ void record() {
 
 				if (!dataAvailable) {
 
-					if (eval) {
+					if (Settings::eval) {
 
-						float* iterations = avatar->getIterations();
-						//float* errorPos = avatar->getErrorPos();
-						//float* errorRot = avatar->getErrorRot();
-						float* timeIteration = avatar->getTimeIteration();
-						float* time = avatar->getTime();
-						float reached = avatar->getReached();
-						float stucked = avatar->getStucked();
+						std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector;
+						IKEvaluator::RunStatsAverage ikStatsTotal;
 
-						float* errorHead = endEffector[head]->getAvdStdPosRot();
-						float* errorHip = endEffector[hip]->getAvdStdPosRot();
-						float* errorLeftHand = endEffector[leftHand]->getAvdStdPosRot();
-						float* errorRightHand = endEffector[rightHand]->getAvdStdPosRot();
-						float* errorLeftForeArm = endEffector[leftForeArm]->getAvdStdPosRot();
-						float* errorRightForeArm = endEffector[rightForeArm]->getAvdStdPosRot();
-						float* errorLeftFoot = endEffector[leftFoot]->getAvdStdPosRot();
-						float* errorRightFoot = endEffector[rightFoot]->getAvdStdPosRot();
-						float* errorLeftKnee = endEffector[leftKnee]->getAvdStdPosRot();
-						float* errorRightKnee = endEffector[rightKnee]->getAvdStdPosRot();
+						// get average run stats per end effector and sum averages for total stats
+						for (size_t idxEndEffector = 0; idxEndEffector < ikStatsPerEndEffector.size(); idxEndEffector++) {
+							IKEvaluator::RunStatsAverage rsa = ikEvaluators.value()[idxEndEffector].getAverage();
+							ikStatsPerEndEffector[idxEndEffector] = rsa;
 
-
-						float overallPosError = (errorHead[0] + errorHip[0] + errorLeftHand[0] + errorLeftForeArm[0] + errorRightHand[0] + errorRightForeArm[0] + errorLeftFoot[0] + errorRightFoot[0] + errorLeftKnee[0] + errorRightKnee[0]) / numOfEndEffectors;
-						float overallRotError = (errorHead[2] + errorHip[2] + errorLeftHand[2] + errorLeftForeArm[2] + errorRightHand[2] + errorRightForeArm[2] + errorLeftFoot[2] + errorRightFoot[2] + errorLeftKnee[2] + errorRightKnee[2]) / numOfEndEffectors;
-
-						float standardDeviationPos = 0.0f;
-						float standardDeviationRot = 0.0f;
-						for (int i = 0; i < numOfEndEffectors; i++) {
-							standardDeviationPos += Kore::pow(endEffector[i]->getAvdStdPosRot()[0] - overallPosError, 2);
-							standardDeviationRot += Kore::pow(endEffector[i]->getAvdStdPosRot()[3] - overallRotError, 2);
+							ikStatsTotal.numIterations.average += rsa.numIterations.average;
+							ikStatsTotal.durationsMs.average += rsa.durationsMs.average;
+							ikStatsTotal.durationAveragePerIterationMs.average += rsa.durationAveragePerIterationMs.average;
+							ikStatsTotal.errorPositionMm.average += rsa.errorPositionMm.average;
+							ikStatsTotal.errorRotation.average += rsa.errorRotation.average;
+							ikStatsTotal.targetReachedPercent += rsa.targetReachedPercent;
+							ikStatsTotal.stuckPercent += rsa.stuckPercent;
 						}
-						standardDeviationPos = Kore::sqrt(standardDeviationPos / numOfEndEffectors);
-						standardDeviationRot = Kore::sqrt(standardDeviationRot / numOfEndEffectors);
 
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[head]->getName(), errorHead[0], errorHead[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[hip]->getName(), errorHip[0], errorHip[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[leftHand]->getName(), errorLeftHand[0], errorLeftHand[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[leftForeArm]->getName(), errorLeftForeArm[0], errorLeftForeArm[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[rightHand]->getName(), errorRightHand[0], errorRightHand[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[rightForeArm]->getName(), errorRightForeArm[0], errorRightForeArm[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[leftFoot]->getName(), errorLeftFoot[0], errorLeftFoot[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[rightFoot]->getName(), errorRightFoot[0], errorRightFoot[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[leftKnee]->getName(), errorLeftKnee[0], errorLeftKnee[2]);
-						Kore::log(LogLevel::Info, "Error %s = %f, %f", endEffector[rightKnee]->getName(), errorRightKnee[0], errorRightKnee[2]);
-						Kore::log(LogLevel::Info, "Overall Error Pos = %f +- %f, Rot = %f +- %f", overallPosError, standardDeviationPos, overallRotError, standardDeviationRot);
+						ikStatsTotal.numIterations.average /= numEndEffectors;
+						ikStatsTotal.durationsMs.average /= numEndEffectors;
+						ikStatsTotal.durationAveragePerIterationMs.average /= numEndEffectors;
+						ikStatsTotal.errorPositionMm.average /= numEndEffectors;
+						ikStatsTotal.errorRotation.average /= numEndEffectors;
+						ikStatsTotal.targetReachedPercent /= numEndEffectors;
+						ikStatsTotal.stuckPercent /= numEndEffectors;
 
-						logger->saveEvaluationData(files[currentFile], iterations, overallPosError, standardDeviationPos, overallRotError, standardDeviationRot, time, timeIteration, reached, stucked, errorHead, errorHip, errorLeftHand, errorLeftForeArm, errorRightHand, errorRightForeArm, errorLeftFoot, errorRightFoot, errorLeftKnee, errorRightKnee);
+						// calculate deviation of total stats
+						for (size_t idxEndEffector = 0; idxEndEffector < ikStatsPerEndEffector.size(); idxEndEffector++) {
+							IKEvaluator::RunStatsAverage statsEndEffector = ikEvaluators.value()[idxEndEffector].getAverage();
+
+							ikStatsTotal.numIterations.deviation += Kore::pow(statsEndEffector.numIterations.average - ikStatsTotal.numIterations.average, 2);
+							ikStatsTotal.durationsMs.deviation += Kore::pow(statsEndEffector.durationsMs.average - ikStatsTotal.durationsMs.average, 2);
+							ikStatsTotal.durationAveragePerIterationMs.deviation += Kore::pow(statsEndEffector.durationAveragePerIterationMs.average - ikStatsTotal.durationAveragePerIterationMs.average, 2);
+							ikStatsTotal.errorPositionMm.deviation += Kore::pow(statsEndEffector.errorPositionMm.average - ikStatsTotal.errorPositionMm.average, 2);
+							ikStatsTotal.errorRotation.deviation += Kore::pow(statsEndEffector.errorRotation.average - ikStatsTotal.errorRotation.average, 2);
+						}
+
+						ikStatsTotal.numIterations.deviation = Kore::sqrt(ikStatsTotal.numIterations.deviation / numEndEffectors);
+						ikStatsTotal.durationsMs.deviation = Kore::sqrt(ikStatsTotal.durationsMs.deviation / numEndEffectors);
+						ikStatsTotal.durationAveragePerIterationMs.deviation = Kore::sqrt(ikStatsTotal.durationAveragePerIterationMs.deviation / numEndEffectors);
+						ikStatsTotal.errorPositionMm.deviation = Kore::sqrt(ikStatsTotal.errorPositionMm.deviation / numEndEffectors);
+						ikStatsTotal.errorRotation.deviation = Kore::sqrt(ikStatsTotal.errorRotation.deviation / numEndEffectors);
+
+						for (size_t idxEndEffector = 0; idxEndEffector < numEndEffectors; idxEndEffector++) {
+							Kore::log(
+								LogLevel::Info,
+								"Error %s = %f, %f",
+								endEffector[idxEndEffector]->getName(),
+								ikStatsPerEndEffector[idxEndEffector].errorPositionMm.average,
+								ikStatsPerEndEffector[idxEndEffector].errorRotation.average
+							);
+						}
+
+						Kore::log(
+							LogLevel::Info,
+							"Overall Error Pos = %f +- %f, Rot = %f +- %f",
+							ikStatsTotal.errorPositionMm.average,
+							ikStatsTotal.errorPositionMm.deviation,
+							ikStatsTotal.errorRotation.average,
+							ikStatsTotal.errorRotation.deviation
+						);
+
+						logger->saveEvaluationData(
+							Settings::files[currentFile],
+							avatar->getIkSolver(),
+							ikStatsTotal,
+							ikStatsPerEndEffector);
 
 						if (FLOAT_EQ(evalValue[ikMode], evalMaxValue[ikMode])) {
 							//if (evalValue[ikMode] >= evalMaxValue[ikMode]) {
@@ -706,20 +738,14 @@ void record() {
 
 							evalValue[ikMode] = evalInitValue[ikMode];
 
-							ikMode++;
-							if (ikMode > evalMaxIk) {
-								ikMode = evalMinIk;
+
+							ikMode = ikMode + 1;
+							if (ikMode > Settings::evalMaxIk) {
+								ikMode = Settings::evalMinIk;
 								currentFile++;
 							}
 
-							endEffector[head]->setIKMode((IKMode)ikMode);
-							endEffector[hip]->setIKMode((IKMode)ikMode);
-							endEffector[leftHand]->setIKMode((IKMode)ikMode);
-							endEffector[leftForeArm]->setIKMode((IKMode)ikMode);
-							endEffector[rightHand]->setIKMode((IKMode)ikMode);
-							endEffector[rightForeArm]->setIKMode((IKMode)ikMode);
-							endEffector[leftFoot]->setIKMode((IKMode)ikMode);
-							endEffector[rightFoot]->setIKMode((IKMode)ikMode);
+							avatar->setIkSolver(IK_SOLVERS[ikMode]);
 						}
 						else {
 							evalValue[ikMode] += evalStep[ikMode];
@@ -910,7 +936,12 @@ void record() {
 	
 	void init() {
 		loadAvatarShader();
-        avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure);
+
+		avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
+
+		for (auto solver : IK_SOLVERS) {
+			std::static_pointer_cast<JacobianIK, IKSolver>(solver)->setBones(avatar->bones);
+		}
 		//avatar = new Avatar("avatar/avatar_female.ogex", "avatar/", structure);
 		
 		// Set camera initial position and orientation
@@ -948,24 +979,24 @@ void record() {
 		
 		logger = new Logger();
 		
-		if(!eval) {
-			std::copy(optimalLambda, optimalLambda + 6, lambda);
-			std::copy(optimalErrorMaxPos, optimalErrorMaxPos + 6, errorMaxPos);
-			std::copy(optimalErrorMaxRot, optimalErrorMaxRot + 6, errorMaxRot);
-			std::copy(optimalMaxIterations, optimalMaxIterations + 6, maxIterations);
+		if(!Settings::eval) {
+			std::copy(Settings::optimalLambda, Settings::optimalLambda + 6, lambda);
+			std::copy(Settings::optimalErrorMaxPos, Settings::optimalErrorMaxPos + 6, errorMaxPos);
+			std::copy(Settings::optimalErrorMaxRot, Settings::optimalErrorMaxRot + 6, errorMaxRot);
+			std::copy(Settings::optimalMaxIterations, Settings::optimalMaxIterations + 6, maxIterations);
 		}
 		
 		endEffector = new EndEffector*[numOfEndEffectors];
-		endEffector[head] = new EndEffector(headBoneIndex, (IKMode)ikMode);
-		endEffector[hip] = new EndEffector(hipBoneIndex, (IKMode)ikMode);
-		endEffector[leftHand] = new EndEffector(leftHandBoneIndex, (IKMode)ikMode);
-		endEffector[leftForeArm] = new EndEffector(leftForeArmBoneIndex, (IKMode)ikMode);
-		endEffector[rightHand] = new EndEffector(rightHandBoneIndex, (IKMode)ikMode);
-		endEffector[rightForeArm] = new EndEffector(rightForeArmBoneIndex, (IKMode)ikMode);
-		endEffector[leftFoot] = new EndEffector(leftFootBoneIndex, (IKMode)ikMode);
-		endEffector[rightFoot] = new EndEffector(rightFootBoneIndex, (IKMode)ikMode);
-		endEffector[leftKnee] = new EndEffector(leftLegBoneIndex, (IKMode)ikMode);
-		endEffector[rightKnee] = new EndEffector(rightLegBoneIndex, (IKMode)ikMode);
+		endEffector[head] = new EndEffector(headBoneIndex);
+		endEffector[hip] = new EndEffector(hipBoneIndex);
+		endEffector[leftHand] = new EndEffector(leftHandBoneIndex);
+		endEffector[leftForeArm] = new EndEffector(leftForeArmBoneIndex);
+		endEffector[rightHand] = new EndEffector(rightHandBoneIndex);
+		endEffector[rightForeArm] = new EndEffector(rightForeArmBoneIndex);
+		endEffector[leftFoot] = new EndEffector(leftFootBoneIndex);
+		endEffector[rightFoot] = new EndEffector(rightFootBoneIndex);
+		endEffector[leftKnee] = new EndEffector(leftLegBoneIndex);
+		endEffector[rightKnee] = new EndEffector(rightLegBoneIndex);
 		initTransAndRot();
 		
 #ifdef KORE_STEAMVR

@@ -629,3 +629,9 @@ void MeshObject::setScale(float scaleFactor) {
 
 
 
+const char* const BoneNode::xMin = "x_min";
+const char* const BoneNode::xMax = "x_max";
+const char* const BoneNode::yMin = "y_min";
+const char* const BoneNode::yMax = "y_max";
+const char* const BoneNode::zMin = "z_min";
+const char* const BoneNode::zMax = "z_max";

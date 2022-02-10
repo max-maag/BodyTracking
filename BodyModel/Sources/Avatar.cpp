@@ -1,26 +1,36 @@
 #include "pch.h"
 #include "Avatar.h"
 #include "RotationUtility.h"
+#include "JacobianIK.h"
+
+#include <algorithm>
 
 using namespace Kore;
 using namespace Kore::Graphics4;
 
-Avatar::Avatar(const char* meshFile, const char* textureFile, const Kore::Graphics4::VertexStructure& structure, float scale) : MeshObject(meshFile, textureFile, structure, scale) {
-	invKin = new InverseKinematics(bones);
+Avatar::Avatar(const char* meshFile, const char* textureFile, const Kore::Graphics4::VertexStructure& structure, std::shared_ptr<IKSolver> ikSolver, float scale) : MeshObject(meshFile, textureFile, structure, scale) {
+	this->ikSolver = ikSolver;
 	
 	// Update bones
-	for (int i = 0; i < bones.size(); ++i) invKin->initializeBone(bones[i]);
+	for (int i = 0; i < bones.size(); ++i) {
+		bones[i]->initialize();
+	}
+
 	
 	// Get the highest position
 	BoneNode* head = getBoneWithIndex(headBoneIndex);
 	Kore::vec4 position = head->combined * Kore::vec4(0, 0, 0, 1);
 	position *= 1.0/position.w();
 	currentHeight = position.z();
+
+	setJointConstraints();
 }
 
 void Avatar::animate(TextureUnit tex) {
 	// Update bones
-	for (int i = 0; i < bones.size(); ++i) invKin->initializeBone(bones[i]);
+	for (int i = 0; i < bones.size(); ++i) {
+		bones[i]->initialize();
+	}
 	
 	for(int j = 0; j < meshesCount; ++j) {
 		int currentBoneIndex = 0;	// Iterate over BoneCountArray
@@ -77,10 +87,10 @@ void Avatar::animate(TextureUnit tex) {
 	}
 }
 
-void Avatar::setDesiredPositionAndOrientation(int boneIndex, IKMode ikMode, Kore::vec3 desPosition, Kore::Quaternion desRotation) {
+void Avatar::setDesiredPositionAndOrientation(int boneIndex, Kore::vec3 desPosition, Kore::Quaternion desRotation, IKEvaluator* ikEvaluator) {
 	BoneNode* bone = getBoneWithIndex(boneIndex);
 	
-	invKin->inverseKinematics(bone, ikMode, desPosition, desRotation);
+	ikSolver->solve(bone, desPosition, desRotation, ikEvaluator);
 }
 
 void Avatar::setFixedPositionAndOrientation(int boneIndex, Kore::vec3 desPosition, Kore::Quaternion desRotation) {
@@ -122,38 +132,211 @@ void Avatar::resetPositionAndRotation() {
 	}
 }
 
-void Avatar::resetVariables() {
-	invKin->setEvalVariables();
-}
-
-float Avatar::getReached() const {
-	return invKin->getReached();
-}
-
-float Avatar::getStucked() const {
-	return invKin->getStucked();
-}
-
-float* Avatar::getIterations() const {
-	return invKin->getIterations();
-}
-
-float* Avatar::getErrorPos() const {
-	return invKin->getErrorPos();
-}
-
-float* Avatar::getErrorRot() const {
-	return invKin->getErrorRot();
-}
-
-float* Avatar::getTime() const {
-	return invKin->getTime();
-}
-
-float* Avatar::getTimeIteration() const {
-	return invKin->getTimeIteration();
-}
-
 float Avatar::getHeight() const {
 	return currentHeight;
+}
+
+std::shared_ptr<IKSolver> Avatar::getIkSolver() {
+	return ikSolver;
+}
+
+void Avatar::setIkSolver(std::shared_ptr<IKSolver> solver) {
+	this->ikSolver = solver;
+}
+
+
+void Avatar::setJointConstraints() {
+	BoneNode* nodeLeft;
+	BoneNode* nodeRight;
+
+	float tolerance = RotationUtility::getRadians(15);
+
+	// Head
+	nodeLeft = bones[headBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 1, 1);
+
+	nodeLeft->constrain[BoneNode::xMin] = -RotationUtility::getRadians(40) - tolerance;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(40) + tolerance;
+
+	nodeLeft->constrain[BoneNode::yMin] = -RotationUtility::getRadians(90) - tolerance;
+	nodeLeft->constrain[BoneNode::yMax] = RotationUtility::getRadians(90) + tolerance;
+
+	nodeLeft->constrain[BoneNode::zMin] = -RotationUtility::getRadians(60) - tolerance;
+	nodeLeft->constrain[BoneNode::zMax] = RotationUtility::getRadians(60) + tolerance;
+
+	log(LogLevel::Info, "Head");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMax]));
+
+	// Neck
+	nodeLeft = bones[spineBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 0, 1);
+
+	nodeLeft->constrain[BoneNode::xMin] = -RotationUtility::getRadians(20) - tolerance;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(0) + tolerance;
+
+	nodeLeft->constrain[BoneNode::zMin] = -RotationUtility::getRadians(35) - tolerance;
+	nodeLeft->constrain[BoneNode::zMax] = RotationUtility::getRadians(35) + tolerance;
+
+	log(LogLevel::Info, "Spine");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMax]));
+
+	// Upperarm
+	nodeLeft = bones[leftArmBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 1, 1);
+
+	nodeLeft->constrain[BoneNode::xMin] = -RotationUtility::getRadians(50) - tolerance;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(130) + tolerance;
+
+	nodeLeft->constrain[BoneNode::yMin] = -RotationUtility::getRadians(90) - tolerance;
+	nodeLeft->constrain[BoneNode::yMax] = RotationUtility::getRadians(90) + tolerance;
+
+	nodeLeft->constrain[BoneNode::zMin] = -RotationUtility::getRadians(90) - tolerance;
+	nodeLeft->constrain[BoneNode::zMax] = RotationUtility::getRadians(90) + tolerance;
+
+	log(LogLevel::Info, "Shoulder Left");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMax]));
+
+	nodeRight = bones[rightArmBoneIndex - 1];
+	nodeRight->axes = nodeLeft->axes;
+
+	nodeRight->constrain[BoneNode::xMin] = nodeLeft->constrain[BoneNode::xMin];
+	nodeRight->constrain[BoneNode::xMax] = nodeLeft->constrain[BoneNode::xMax];
+
+	nodeRight->constrain[BoneNode::yMin] = -nodeLeft->constrain[BoneNode::yMin];
+	nodeRight->constrain[BoneNode::yMax] = -nodeLeft->constrain[BoneNode::yMax];
+
+	nodeRight->constrain[BoneNode::zMin] = -nodeLeft->constrain[BoneNode::zMin];
+	nodeRight->constrain[BoneNode::zMax] = -nodeLeft->constrain[BoneNode::zMax];
+
+	log(LogLevel::Info, "Shoulder Right");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::zMax]));
+
+	// Forearm
+	nodeLeft = bones[leftForeArmBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 0, 0);
+
+	nodeLeft->constrain[BoneNode::xMin] = 0;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(140) + tolerance;
+
+	log(LogLevel::Info, "Elbow Left");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+
+	nodeRight = bones[rightForeArmBoneIndex - 1];
+	nodeRight->axes = nodeLeft->axes;
+
+	nodeRight->constrain[BoneNode::xMin] = nodeLeft->constrain[BoneNode::xMin];
+	nodeRight->constrain[BoneNode::xMax] = nodeLeft->constrain[BoneNode::xMax];
+
+	log(LogLevel::Info, "Elbow Right");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMax]));
+
+	// Hand
+	nodeLeft = bones[leftHandBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 1, 1);
+
+	nodeLeft->constrain[BoneNode::xMin] = -RotationUtility::getRadians(30) - tolerance;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(30) + tolerance;
+
+	nodeLeft->constrain[BoneNode::yMin] = -RotationUtility::getRadians(80) - tolerance;
+	nodeLeft->constrain[BoneNode::yMax] = RotationUtility::getRadians(80) + tolerance;
+
+	nodeLeft->constrain[BoneNode::zMin] = -RotationUtility::getRadians(60) - tolerance;
+	nodeLeft->constrain[BoneNode::zMax] = RotationUtility::getRadians(60) + tolerance;
+
+	log(LogLevel::Info, "Hand Left");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMax]));
+
+	nodeRight = bones[rightHandBoneIndex - 1];
+	nodeRight->axes = nodeLeft->axes;
+
+	nodeRight->constrain[BoneNode::xMin] = nodeLeft->constrain[BoneNode::xMin];
+	nodeRight->constrain[BoneNode::xMax] = nodeLeft->constrain[BoneNode::xMax];
+
+	nodeRight->constrain[BoneNode::yMin] = -nodeLeft->constrain[BoneNode::yMin];
+	nodeRight->constrain[BoneNode::yMax] = -nodeLeft->constrain[BoneNode::yMax];
+
+	nodeRight->constrain[BoneNode::zMin] = -nodeLeft->constrain[BoneNode::zMin];
+	nodeRight->constrain[BoneNode::zMax] = -nodeLeft->constrain[BoneNode::zMax];
+
+	log(LogLevel::Info, "Hand Right");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::zMax]));
+
+	// Thigh
+	nodeLeft = bones[leftUpLegBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 1, 1);
+
+	nodeLeft->constrain[BoneNode::xMin] = -RotationUtility::getRadians(110) - tolerance;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(30) + tolerance;
+
+	nodeLeft->constrain[BoneNode::yMin] = -RotationUtility::getRadians(50) - tolerance;
+	nodeLeft->constrain[BoneNode::yMax] = RotationUtility::getRadians(40) + tolerance;
+
+	nodeLeft->constrain[BoneNode::zMin] = -RotationUtility::getRadians(40) - tolerance;
+	nodeLeft->constrain[BoneNode::zMax] = RotationUtility::getRadians(0) + tolerance;
+
+	log(LogLevel::Info, "Upper Leg Left");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::zMax]));
+
+	nodeRight = bones[rightUpLegBoneIndex - 1];
+	nodeRight->axes = nodeLeft->axes;
+
+	nodeRight->constrain[BoneNode::xMin] = nodeLeft->constrain[BoneNode::xMin];
+	nodeRight->constrain[BoneNode::xMax] = nodeLeft->constrain[BoneNode::xMax];
+
+	nodeRight->constrain[BoneNode::yMin] = -nodeLeft->constrain[BoneNode::yMin];
+	nodeRight->constrain[BoneNode::yMax] = -nodeLeft->constrain[BoneNode::yMax];
+
+	nodeRight->constrain[BoneNode::zMin] = -nodeLeft->constrain[BoneNode::zMin];
+	nodeRight->constrain[BoneNode::zMax] = -nodeLeft->constrain[BoneNode::zMax];
+
+	log(LogLevel::Info, "Upper Leg Right");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMax]));
+	log(LogLevel::Info, "ymin %f ymax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::yMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::yMax]));
+	log(LogLevel::Info, "zmin %f zmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::zMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::zMax]));
+
+	// Calf
+	nodeLeft = bones[leftLegBoneIndex - 1];
+	nodeLeft->axes = Kore::vec3(1, 0, 0);
+
+	nodeLeft->constrain[BoneNode::xMin] = 0;
+	nodeLeft->constrain[BoneNode::xMax] = RotationUtility::getRadians(150) + tolerance;
+
+	log(LogLevel::Info, "Knee Left");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeLeft->constrain[BoneNode::xMax]));
+
+	nodeRight = bones[rightLegBoneIndex - 1];
+	nodeRight->axes = nodeLeft->axes;
+
+	nodeRight->constrain[BoneNode::xMin] = nodeLeft->constrain[BoneNode::xMin];
+	nodeRight->constrain[BoneNode::xMax] = nodeLeft->constrain[BoneNode::xMax];
+
+	log(LogLevel::Info, "Knee Right");
+	log(LogLevel::Info, "xmin %f xmax %f", RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMin]), RotationUtility::getDegree(nodeRight->constrain[BoneNode::xMax]));
+
+	for (BoneNode* bone : bones) {
+		if (bone->constrain[BoneNode::xMin] > bone->constrain[BoneNode::xMax]) {
+			std::swap(bone->constrain[BoneNode::xMin], bone->constrain[BoneNode::xMax]);
+		}
+
+		if (bone->constrain[BoneNode::yMin] > bone->constrain[BoneNode::yMax]) {
+			std::swap(bone->constrain[BoneNode::yMin], bone->constrain[BoneNode::yMax]);
+		}
+
+		if (bone->constrain[BoneNode::zMin] > bone->constrain[BoneNode::zMax]) {
+			std::swap(bone->constrain[BoneNode::zMin], bone->constrain[BoneNode::zMax]);
+		}
+	}
 }

@@ -10,6 +10,9 @@ enum EndEffectorIndices {
 	head, hip, leftHand, leftForeArm, rightHand, rightForeArm, leftFoot, rightFoot, leftKnee, rightKnee, unknown
 };
 
+// index of unknown is equal to number of end effectors
+const size_t numEndEffectors = unknown;
+
 // Head
 const int headBoneIndex = 20;
 const int neckBoneIndex = 18;
@@ -52,8 +55,7 @@ const char* const rKneeTag = "rKnee";
 
 class EndEffector {
 public:
-	EndEffector(int boneIndex, IKMode ikMode);
-	~EndEffector();
+	EndEffector(int boneIndex);
 	
 	Kore::vec3 getDesPosition() const;
 	void setDesPosition(Kore::vec3 pos);
@@ -72,24 +74,13 @@ public:
 	
 	Kore::Quaternion getFinalRotation() const;
 	void setFinalRotation(Kore::Quaternion offsetRotation);
-	
-	void getError(BoneNode* targetBone);
-	void resetEvalVariables();
-	float getErrorPos();
-	float getErrorRot();
-	float getRMSE();
-	void getErrorPosAndRot(float& pos, float& rot);
-	float* getAvdStdPosRot() const;
-	
+
 	int getDeviceIndex() const;
 	void setDeviceIndex(int index);
 	
 	int getBoneIndex() const;
 	
 	const char* getName() const;
-	
-	IKMode getIKMode() const;
-	void setIKMode(IKMode mode);
 	
 private:
 	Kore::vec3 desPosition;
@@ -101,20 +92,9 @@ private:
 	Kore::vec3 finalPosition;
 	Kore::Quaternion finalRotation;
 	
-	const int frames = 20000;
-	int size = 0;
-	float* evalErrorPos;
-	float* evalErrorRot;
-	
-	float calcAvg(const float* vec) const;
-	float calcStd(const float* vec) const;
-	float calcMin(const float* vec) const;
-	float calcMax(const float* vec) const;
-	
 	int boneIndex;		// As defined in .ogex node (e.g. nodeX ==> boneIndex = X)
 	const char* name;	// Name of the end-effector (e.g. lHand)
 	int deviceID;		// ID of the VR device
-	IKMode ikMode;
 	
 	const char* getNameForIndex(const int ID) const;
 	int getIndexForName(const char* name) const;
