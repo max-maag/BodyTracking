@@ -1,0 +1,3 @@
+[submodule "Kinc"]
+	path = BodyModel/Kore
+	url = https://github.com/Kode/Kinc.git
