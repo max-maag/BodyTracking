@@ -62,7 +62,7 @@ void JacobianIK::applyChanges(std::vector<float> deltaTheta, BoneNode* targetBon
 		if (axes.z() == 1.0 && i < size) bone->rotation.rotate(Kore::Quaternion(Kore::vec3(0, 0, 1), deltaTheta[i++]));
 		
 		bone->rotation.normalize();
-		bone->local = bone->transform * bone->rotation.matrix().Transpose();
+		bone->calculateLocal();
 		
 		bone = bone->parent;
 	}

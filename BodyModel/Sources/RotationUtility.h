@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Kore/Math/Vector.h>
 #include <Kore/Math/Quaternion.h>
 
 namespace Kore {
@@ -10,5 +11,6 @@ namespace Kore {
 		float getRadians(float degree);
 		float getDegree(float rad);
 		void getOrientation(const Kore::mat4* m, Kore::Quaternion* orientation);
+		Kore::vec3 rotate(Kore::vec3 v, Kore::Quaternion q);
 	}
 }

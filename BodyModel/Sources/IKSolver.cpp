@@ -24,6 +24,8 @@ void IKSolver::solve(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore:
 	bool hasReachedTarget = checkHasReachedTarget(errorPosition, errorOrientation);
 	bool isStuck = false;
 
+	beforeIterations(boneEndEffector, positionTarget, orientationTarget);
+
 	while (numIterations < numIterationsMax && !hasReachedTarget && !isStuck) {
 		if (stats) {
 			stats->beginIteration();
@@ -45,11 +47,21 @@ void IKSolver::solve(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore:
 		if (stats) {
 			stats->endIteration();
 		}
+
+		afterIterations();
 	}
 
 	if (stats) {
 		stats->endRun(errorPosition, errorOrientation, hasReachedTarget, isStuck);
 	}
+}
+
+void IKSolver::beforeIterations(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget) {
+	// Nothing to do
+}
+
+void IKSolver::afterIterations() {
+	// Nothing to do
 }
 
 bool IKSolver::checkHasReachedTarget(float errorPosition, float errorRotation) const {

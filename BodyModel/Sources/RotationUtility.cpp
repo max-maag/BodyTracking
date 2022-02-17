@@ -57,4 +57,3 @@ void Kore::RotationUtility::getOrientation(const Kore::mat4* m, Kore::Quaternion
 	orientation->z = copysign(orientation->z, m->get(1, 0) - m->get(0, 1));
 	orientation->normalize();
 }
-

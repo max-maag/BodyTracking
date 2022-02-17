@@ -85,9 +85,9 @@ struct BoneNode {
 	BoneNode* parent;
 	
 	Kore::mat4 bind;
-	Kore::mat4 transform;
-	Kore::mat4 local;
-	Kore::mat4 combined, combinedInv;
+	Kore::mat4 transform; // local bone length in translation components?
+	Kore::mat4 local; // parent end -> this end
+	Kore::mat4 combined, combinedInv; // root -> this end
 	Kore::mat4 finalTransform;
 	
 	Kore::Quaternion rotation;	// local rotation
@@ -153,6 +153,10 @@ struct BoneNode {
 		finalTransform = combined * combinedInv;
 	}
 
+	void calculateLocal() {
+		local = transform * rotation.matrix().Transpose();
+	}
+
 	void applyJointConstraints() {
 		BoneNode* bone = this;
 		while (bone->initialized) {
@@ -179,7 +183,7 @@ struct BoneNode {
 
 			// bone->rotation = Kore::Quaternion((double) x, (double) y, (double) z, 1);
 			bone->rotation.normalize();
-			bone->local = bone->transform * bone->rotation.matrix().Transpose();
+			bone->calculateLocal();
 			bone = bone->parent;
 		}
 	}

@@ -20,6 +20,7 @@
 #include "LivingRoom.h"
 #include "Logger.h"
 #include "JacobianIK.h"
+#include "GAP/FABRIKSolver.h"
 
 #include <algorithm> // std::sort, std::copy
 
@@ -65,17 +66,20 @@ float errorMaxPos[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f
 float errorMaxRot[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f	};
 
 namespace {
-	const std::array<std::shared_ptr<IKSolver>, 6> IK_SOLVERS {
+	const std::array<std::shared_ptr<IKSolver>, 1> IK_SOLVERS {
+		/*
 		std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::JPI,		4000,	0.1,	0.1),
 		std::make_shared<JacobianIK>(JacobianIKMode::DLS,		20,		0.001,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::SVD,		10,		0.01,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::SVD_DLS,	20,		0.001,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::SDLS,		20,		0.01,	0.01)
+		*/
+		std::make_shared<FABRIKSolver>(1000, 0.1, 0.1)
 	};
 
 
-	size_t ikMode = 2;
+	size_t ikMode = 0;
 	size_t currentFile = 0;
 
 	const int width = 1024;

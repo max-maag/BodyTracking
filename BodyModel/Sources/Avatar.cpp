@@ -99,7 +99,7 @@ void Avatar::setFixedPositionAndOrientation(int boneIndex, Kore::vec3 desPositio
 	bone->transform = mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z());
 	bone->rotation = desRotation;
 	bone->rotation.normalize();
-	bone->local = bone->transform * bone->rotation.matrix().Transpose();
+	bone->calculateLocal();
 }
 
 void Avatar::setFixedOrientation(int boneIndex, Kore::Quaternion desRotation) {
@@ -113,7 +113,7 @@ void Avatar::setFixedOrientation(int boneIndex, Kore::Quaternion desRotation) {
 	//bone->rotation = desRotation;
 	
 	bone->rotation.normalize();
-	bone->local = bone->transform * bone->rotation.matrix().Transpose();
+	bone->calculateLocal();
 }
 
 BoneNode* Avatar::getBoneWithIndex(int boneIndex) const {
