@@ -88,7 +88,7 @@ struct BoneNode {
 	Kore::mat4 transform; // local bone length in translation components?
 	Kore::mat4 local; // parent end -> this end
 	Kore::mat4 combined, combinedInv; // root -> this end
-	Kore::mat4 finalTransform;
+	Kore::mat4 finalTransform; // combined in world coordinates?
 	
 	Kore::Quaternion rotation;	// local rotation
 	

@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "RotationUtility.h"
+#include "Settings.h"
 
 #include <math.h>
 
@@ -56,4 +57,30 @@ void Kore::RotationUtility::getOrientation(const Kore::mat4* m, Kore::Quaternion
 	orientation->y = copysign(orientation->y, m->get(0, 2) - m->get(2, 0));
 	orientation->z = copysign(orientation->z, m->get(1, 0) - m->get(0, 1));
 	orientation->normalize();
+}
+
+Kore::Quaternion Kore::RotationUtility::getRotationFromTo(Kore::vec3 v1, Kore::vec3 v2) {
+	// From Sam Hocevar's "Quaternion from two vectors: the final version"
+	// http://sam.hocevar.net/blog/2014/02/
+
+	float normUnormV = Kore::sqrt(v1.squareLength() * v2.squareLength());
+	float realPart = normUnormV + v1.dot(v2);
+
+	Kore::vec3 w;
+
+	if (realPart < Settings::nearNull * normUnormV) {
+		realPart = 0;
+		w = Kore::abs(v1.x()) > Kore::abs(v1.z()) ?
+				Kore::vec3(-v1.y(), v1.x(), 0) :
+				Kore::vec3(0, -v1.z(), v1.y());
+	}
+	else {
+		w = v1.cross(v2);
+	}
+
+	auto result = Kore::Quaternion(w.x(), w.y(), w.z(), realPart);
+
+	result.normalize();
+
+	return result;
 }

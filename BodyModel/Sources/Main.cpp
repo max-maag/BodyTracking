@@ -5,6 +5,7 @@
 #include <Kore/IO/FileReader.h>
 #include <Kore/Graphics4/PipelineState.h>
 #include <Kore/Graphics1/Color.h>
+//#include <Kore/Graphics2/Graphics.h>
 #include <Kore/Input/Keyboard.h>
 #include <Kore/Input/Mouse.h>
 #include <Kore/Audio2/Audio.h>
@@ -21,6 +22,8 @@
 #include "Logger.h"
 #include "JacobianIK.h"
 #include "GAP/FABRIKSolver.h"
+#include "Utils/StaticMeshBuilder.h"
+#include "Utils/StaticMeshRenderer.h"
 
 #include <algorithm> // std::sort, std::copy
 
@@ -66,6 +69,8 @@ float errorMaxPos[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f
 float errorMaxRot[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f	};
 
 namespace {
+	using namespace utils;
+
 	const std::array<std::shared_ptr<IKSolver>, 1> IK_SOLVERS {
 		/*
 		std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
@@ -75,6 +80,7 @@ namespace {
 		std::make_shared<JacobianIK>(JacobianIKMode::SVD_DLS,	20,		0.001,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::SDLS,		20,		0.01,	0.01)
 		*/
+		//std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
 		std::make_shared<FABRIKSolver>(1000, 0.1, 0.1)
 	};
 
@@ -85,9 +91,12 @@ namespace {
 	const int width = 1024;
 	const int height = 768;
 	
-	const bool renderRoom = true;
-	const bool renderTrackerAndController = true;
+	const bool renderRoom = false;
+	const bool renderTrackerAndController = false;
 	const bool renderAxisForEndEffector = false;
+
+	// If true, pause animation of non-VR play-back
+	bool shouldPauseAnimation = false;
 	
 	EndEffector** endEffector;
 	const int numOfEndEffectors = 10;
@@ -155,8 +164,13 @@ namespace {
 	Kore::Quaternion initRotInv;
 
 	std::optional<std::array<IKEvaluator, numEndEffectors>> ikEvaluators = Settings::eval ? std::make_optional(std::array<IKEvaluator, numEndEffectors>()) : std::nullopt;
+
+	//std::unique_ptr<Kore::Graphics2::Graphics2> graphics2D;
 	
 	bool calibratedAvatar = false;
+
+	
+	static const Kore::mat4 JOINT_AXES_SCALE = Kore::mat4::Scale(0.5);
 	
 #ifdef KORE_STEAMVR
 	bool controllerButtonsInitialized = false;
@@ -164,6 +178,23 @@ namespace {
 	bool firstPersonMonitor = false;
 #endif
 	
+	mat4 getBoneTransform(BoneNode* bone) {
+		return /* initRot.invert().matrix() */ bone->combined;
+		/*
+		vec3 endEffectorPos = bone->getPosition();
+		endEffectorPos = initTrans * vec4(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z(), 1);
+		Kore::Quaternion endEffectorRot = initRot.rotated(bone->getOrientation());
+
+		return mat4::Translation(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z()) * endEffectorRot.matrix().Transpose();
+		*/
+	}
+
+	// Rennders x,y,z axes using transformLocal as M. Pipeline, P and V need to be set before calling this function.
+	void renderAxes(Kore::mat4 transformLocal) {
+		Graphics4::setMatrix(mLocation, transformLocal);
+		viveObjects[2]->render(tex);
+	}
+
 	void renderVRDevice(int index, Kore::mat4 M) {
 		Graphics4::setMatrix(mLocation, M);
 		viveObjects[index]->render(tex);
@@ -239,15 +270,15 @@ namespace {
 		Graphics4::setPipeline(pipeline);
 		
 		for(int i = 0; i < numOfEndEffectors; ++i) {
-			BoneNode* bone = avatar->getBoneWithIndex(endEffector[i]->getBoneIndex());
-			
-			vec3 endEffectorPos = bone->getPosition();
-			endEffectorPos = initTrans * vec4(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z(), 1);
-			Kore::Quaternion endEffectorRot = initRot.rotated(bone->getOrientation());
-			
-			Kore::mat4 M = mat4::Translation(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z()) * endEffectorRot.matrix().Transpose();
-			Graphics4::setMatrix(mLocation, M);
-			viveObjects[2]->render(tex);
+			renderAxes(getBoneTransform(avatar->getBoneWithIndex(endEffector[i]->getBoneIndex())));
+		}
+	}
+
+	void renderTargets() {
+		for (int i = 0; i < numOfEndEffectors; ++i) {
+			Kore::vec3 position = endEffector[i]->getFinalPosition();
+			Kore::Quaternion rotation = endEffector[i]->getFinalRotation();
+			renderAxes(Kore::mat4::Translation(position.x(), position.y(), position.z()) * rotation.matrix());
 		}
 	}
 	
@@ -547,6 +578,27 @@ void record() {
 	}
 #endif
 
+	void renderBones(Kore::mat4 V, Kore::mat4 P) {
+		Kore::Graphics4::setPipeline(pipeline);
+		Kore::Graphics4::setMatrix(pLocation, P);
+		Kore::Graphics4::setMatrix(vLocation, V);
+
+		for (size_t idxBone = 0; idxBone < avatar->bones.size(); ++idxBone) {
+			BoneNode* bone = avatar->bones[idxBone];
+
+			bone->initialize();
+
+			renderAxes(
+				getBoneTransform(bone) *
+				JOINT_AXES_SCALE
+			);
+		}
+	}
+
+	bool shouldAdvanceAnimation(float timeSinceStart) {
+		return !shouldPauseAnimation && (timeSinceStart - lastFrameTime) >= fpsLimit;
+	}
+
 	void update() {
 		float t = (float)(System::time() - startTime);
 		double deltaT = t - lastTime;
@@ -632,7 +684,7 @@ void record() {
 		}
 #else
 		// Read line
-		if ((t - lastFrameTime) >= fpsLimit) {
+		if (shouldAdvanceAnimation(t)) {
 			float scaleFactor;
 			EndEffectorIndices indices[numOfEndEffectors];
 			Kore::vec3 desPosition[numOfEndEffectors];
@@ -774,7 +826,7 @@ void record() {
 		mat4 P = getProjectionMatrix();
 		mat4 V = getViewMatrix();
 		
-		renderAvatar(V, P);
+		//renderAvatar(V, P);
 		
 		if (renderTrackerAndController) renderAllVRDevices();
 		
@@ -782,8 +834,13 @@ void record() {
 		
 		if (renderRoom) renderLivingRoom(V, P);
 #endif
+		
+		renderBones(V, P);
+		renderTargets();
 
 		Graphics4::end();
+
+		//graphics2D->begin(true);
 		Graphics4::swapBuffers();
 	}
 	
@@ -839,6 +896,9 @@ void record() {
 				break;
 			case KeyL:
 				record();
+				break;
+			case KeySpace:
+				shouldPauseAnimation = !shouldPauseAnimation;
 				break;
 			default:
 				break;
@@ -939,6 +999,8 @@ void record() {
 	}
 	
 	void init() {
+		//graphics2D = std::make_unique<Kore::Graphics2::Graphics2>(width, height, true);
+
 		loadAvatarShader();
 
 		avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
@@ -960,7 +1022,7 @@ void record() {
 			viveObjects[1] = new MeshObject("vivemodels/vivecontroller.ogex", "vivemodels/", structure, 1);
 		}
 		
-		if (renderTrackerAndController || renderAxisForEndEffector) {
+		if (true || renderTrackerAndController || renderAxisForEndEffector) {
 			viveObjects[2] = new MeshObject("vivemodels/axis.ogex", "vivemodels/", structure, 1);
 		}
 		

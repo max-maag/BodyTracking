@@ -57,18 +57,21 @@ class EndEffector {
 public:
 	EndEffector(int boneIndex);
 	
+	// Actual tracker position
 	Kore::vec3 getDesPosition() const;
 	void setDesPosition(Kore::vec3 pos);
 	
 	Kore::Quaternion getDesRotation() const;
 	void setDesRotation(Kore::Quaternion rot);
 	
+	// Offset tracker position to bone position
 	Kore::vec3 getOffsetPosition() const;
 	void setOffsetPosition(Kore::vec3 offsetPosition);
 	
 	Kore::Quaternion getOffsetRotation() const;
 	void setOffsetRotation(Kore::Quaternion offsetRotation);
 	
+	// Desired bone position in world coordinates
 	Kore::vec3 getFinalPosition() const;
 	void setFinalPosition(Kore::vec3 offsetPosition);
 	
