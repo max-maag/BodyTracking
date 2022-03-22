@@ -84,3 +84,11 @@ Kore::Quaternion Kore::RotationUtility::getRotationFromTo(Kore::vec3 v1, Kore::v
 
 	return result;
 }
+
+Kore::vec3 Kore::RotationUtility::rotate(Kore::Quaternion q, Kore::vec3 v) {
+	Kore::Quaternion result = q.invert();
+	result.rotate(Kore::Quaternion(v.x(), v.y(), v.z(), 0));
+	result.rotate(q);
+
+	return Kore::vec3(result.x, result.y, result.z);
+}

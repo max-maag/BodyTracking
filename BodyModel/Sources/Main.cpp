@@ -80,8 +80,8 @@ namespace {
 		std::make_shared<JacobianIK>(JacobianIKMode::SVD_DLS,	20,		0.001,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::SDLS,		20,		0.01,	0.01)
 		*/
-		//std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
-		std::make_shared<FABRIKSolver>(1000, 0.1, 0.1)
+		std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
+		//std::make_shared<FABRIKSolver>(1000, 0.1, 0.1)
 	};
 
 
@@ -92,8 +92,8 @@ namespace {
 	const int height = 768;
 	
 	const bool renderRoom = false;
-	const bool renderTrackerAndController = false;
-	const bool renderAxisForEndEffector = false;
+	const bool renderTrackerAndController = true;
+	const bool renderAxisForEndEffector = true;
 
 	// If true, pause animation of non-VR play-back
 	bool shouldPauseAnimation = false;
@@ -158,10 +158,8 @@ namespace {
 	// Variables to mirror the room and the avatar
 	vec3 mirrorOver(6.057f, 0.0f, 0.04f);
 	
-	mat4 initTrans;
-	mat4 initTransInv;
-	Kore::Quaternion initRot;
-	Kore::Quaternion initRotInv;
+	Kore::Quaternion rotationWorldToAvatar;
+	Kore::Quaternion rotationAvatarToWorld;
 
 	std::optional<std::array<IKEvaluator, numEndEffectors>> ikEvaluators = Settings::eval ? std::make_optional(std::array<IKEvaluator, numEndEffectors>()) : std::nullopt;
 
@@ -179,11 +177,11 @@ namespace {
 #endif
 	
 	mat4 getBoneTransform(BoneNode* bone) {
-		return /* initRot.invert().matrix() */ bone->combined;
+		return /* rotationWorldToAvatar.invert().matrix() */ bone->combined;
 		/*
 		vec3 endEffectorPos = bone->getPosition();
-		endEffectorPos = initTrans * vec4(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z(), 1);
-		Kore::Quaternion endEffectorRot = initRot.rotated(bone->getOrientation());
+		endEffectorPos = transformAvatarToWorld * vec4(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z(), 1);
+		Kore::Quaternion endEffectorRot = rotationWorldToAvatar.rotated(bone->getOrientation());
 
 		return mat4::Translation(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z()) * endEffectorRot.matrix().Transpose();
 		*/
@@ -296,15 +294,16 @@ namespace {
 	void renderAvatar(mat4 V, mat4 P) {
 		Graphics4::setPipeline(pipeline);
 		
+		const mat4 M = rotationWorldToAvatar.matrix();
+
 		Graphics4::setMatrix(vLocation, V);
 		Graphics4::setMatrix(pLocation, P);
-		Graphics4::setMatrix(mLocation, initTrans);
+
+		Graphics4::setMatrix(mLocation, M);
 		avatar->animate(tex);
 		
-		// Mirror the avatar
-		mat4 initTransMirror = getMirrorMatrix() * initTrans;
-		
-		Graphics4::setMatrix(mLocation, initTransMirror);
+		// Render mirrored
+		Graphics4::setMatrix(mLocation, getMirrorMatrix() * M);
 		avatar->animate(tex);
 	}
 	
@@ -335,8 +334,8 @@ namespace {
 		
 		if (calibratedAvatar) {
 			// Transform desired position/rotation to the character local coordinate system
-			desPosition = initTransInv * vec4(desPosition.x(), desPosition.y(), desPosition.z(), 1);
-			desRotation = initRotInv.rotated(desRotation);
+			desPosition = Kore::RotationUtility::rotate(rotationWorldToAvatar, desPosition);
+			desRotation = rotationAvatarToWorld.rotated(desRotation);
 
 			// Add offset
 			Kore::Quaternion offsetRotation = endEffector[endEffectorID]->getOffsetRotation();
@@ -367,21 +366,11 @@ namespace {
 	}
 	
 	void initTransAndRot() {
-		initRot = Kore::Quaternion(0, 0, 0, 1);
-		initRot.rotate(Kore::Quaternion(vec3(1, 0, 0), -Kore::pi / 2.0));
-		initRot.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi / 2.0));
-		initRot.normalize();
-		initRotInv = initRot.invert();
-		
-		// Move character in the middle of both feet
-		Kore::vec3 initPos = Kore::vec3(0, 0, 0);
-		Kore::vec3 posLeftFoot = endEffector[leftFoot]->getDesPosition();
-		Kore::vec3 posRightFoot = endEffector[rightFoot]->getDesPosition();
-		//initPos = (posRightFoot + posLeftFoot) / 2.0f;
-		initPos.y() = 0.0f;
-
-		initTrans = mat4::Translation(initPos.x(), initPos.y(), initPos.z()) * initRot.matrix().Transpose();
-		initTransInv = initTrans.Invert();
+		rotationWorldToAvatar = Kore::Quaternion(0, 0, 0, 1);
+		rotationWorldToAvatar.rotate(Kore::Quaternion(vec3(1, 0, 0), -Kore::pi / 2.0));
+		rotationWorldToAvatar.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi / 2.0));
+		rotationWorldToAvatar.normalize();
+		rotationAvatarToWorld = rotationWorldToAvatar.invert();
 	}
 	
 	void calibrate() {
@@ -392,8 +381,8 @@ namespace {
 			Kore::Quaternion desRotation = endEffector[i]->getDesRotation();
 			
 			// Transform desired position/rotation to the character local coordinate system
-			desPosition = initTransInv * vec4(desPosition.x(), desPosition.y(), desPosition.z(), 1);
-			desRotation = initRotInv.rotated(desRotation);
+			desPosition = rotationWorldToAvatar.matrix() * vec4(desPosition, 1);
+			desRotation = rotationAvatarToWorld.rotated(desRotation);
 			
 			// Get actual position/rotation of the character skeleton
 			BoneNode* bone = avatar->getBoneWithIndex(endEffector[i]->getBoneIndex());
@@ -826,7 +815,7 @@ void record() {
 		mat4 P = getProjectionMatrix();
 		mat4 V = getViewMatrix();
 		
-		//renderAvatar(V, P);
+		renderAvatar(V, P);
 		
 		if (renderTrackerAndController) renderAllVRDevices();
 		
@@ -835,7 +824,7 @@ void record() {
 		if (renderRoom) renderLivingRoom(V, P);
 #endif
 		
-		renderBones(V, P);
+		//renderBones(V, P);
 		renderTargets();
 
 		Graphics4::end();
@@ -1066,6 +1055,34 @@ void record() {
 		VrInterface::init(nullptr, nullptr, nullptr); // TODO: Remove
 #endif
 	}
+}
+
+void test() {
+	vec3 v(1, 0, 0);
+	
+	Kore::Quaternion q(vec3(0, 1, 0), pi/2);
+
+	vec4 matResult = q.matrix() * vec4(v, 1);
+
+	Kore::Quaternion qv = Kore::Quaternion(v.x(), v.y(), v.z(), 0);
+
+	Kore::Quaternion qResult = q * qv * q.invert();
+	Kore::Quaternion qResultAlternative = q.invert() * qv * q;
+
+	Kore::Quaternion a = q.rotated(qv);
+	Kore::Quaternion b = qv.rotated(q);
+
+	Kore::log(
+		Kore::LogLevel::Info,
+		"Matrix:\t%.2f, %.2f, %.2f\n"
+		"Quat:\t%.2f, %.2f, %.2f\n"
+		"Q alt:\t%.2f, %.2f, %.2f\n",
+		matResult.x(), matResult.y(), matResult.z(),
+		qResult.x, qResult.y, qResult.z,
+		qResultAlternative.x, qResultAlternative.y, qResultAlternative.z
+	);
+
+	System::stop();
 }
 
 int kickstart(int argc, char** argv) {

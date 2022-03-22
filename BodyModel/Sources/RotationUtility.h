@@ -11,7 +11,7 @@ namespace Kore {
 		float getRadians(float degree);
 		float getDegree(float rad);
 		void getOrientation(const Kore::mat4* m, Kore::Quaternion* orientation);
-		Kore::vec3 rotate(Kore::vec3 v, Kore::Quaternion q);
+		Kore::vec3 rotate(Kore::Quaternion q, Kore::vec3 v);
 		Kore::Quaternion getRotationFromTo(Kore::vec3 v1, Kore::vec3 v2);
 	}
 }
