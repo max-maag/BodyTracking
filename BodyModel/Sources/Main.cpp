@@ -22,8 +22,6 @@
 #include "Logger.h"
 #include "JacobianIK.h"
 #include "GAP/FABRIKSolver.h"
-#include "Utils/StaticMeshBuilder.h"
-#include "Utils/StaticMeshRenderer.h"
 
 #include <algorithm> // std::sort, std::copy
 
@@ -69,8 +67,6 @@ float errorMaxPos[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f
 float errorMaxRot[6] 		= { 0.0001f,	0.0001f,	0.0001f,	0.0001f,	0.0001f,		0.0001f	};
 
 namespace {
-	using namespace utils;
-
 	const std::array<std::shared_ptr<IKSolver>, 1> IK_SOLVERS {
 		/*
 		std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
