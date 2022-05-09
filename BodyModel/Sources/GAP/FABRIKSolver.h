@@ -3,9 +3,18 @@
 
 #include <vector>
 #include "../IKSolver.h"
+#include <unordered_map>
+#include <functional>
 
 class FABRIKSolver : public IKSolver {
-protected:
+public:
+	enum class EventType {
+		IterationStepComplete, IterationComplete, SolveComplete
+	};
+
+	typedef std::function<void(EventType, std::unordered_map<const BoneNode*, Kore::vec3>)> EventListener;
+
+private:
 	/* The IK chain.
 	 * 
 	 * The first bone points from the origin to the first joint.
@@ -20,6 +29,10 @@ protected:
 
 	Kore::vec3 rootWorldPosition;
 
+	std::vector<EventListener> eventListeners;
+
+	void fireEvent(EventType eventType);
+
 protected:
 	void beforeIterations(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget) override;
 	void iterate(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget) override;
@@ -33,6 +46,9 @@ protected:
 
 public:
 	FABRIKSolver(unsigned int numIterationsMax, float thresholdTargetReachedPosition, float thresholdTargetReachedRotation);
+
+	void addListener(EventListener listener);
+	//void removeListener(EventListener listener);
 };
 
 

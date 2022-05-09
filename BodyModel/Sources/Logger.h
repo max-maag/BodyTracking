@@ -32,7 +32,7 @@ public:
 	void endLogger();
 	void saveData(const char* tag, Kore::vec3 rawPos, Kore::Quaternion rawRot, float scale);
 	
-	void saveEvaluationData(std::string filename, std::shared_ptr<const IKSolver> solver, IKEvaluator::RunStatsAverage ikStatsTotal, std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector);
+	void saveEvaluationData(std::string filename, const IKSolver& solver, IKEvaluator::RunStatsAverage ikStatsTotal, std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector);
 	void endEvaluationLogger();
 	
 	// HMM

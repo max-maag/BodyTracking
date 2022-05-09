@@ -27,11 +27,17 @@ const int leftShoulderBoneIndex = 11;
 const int leftArmBoneIndex = 12;
 const int leftForeArmBoneIndex = 13;
 const int leftHandBoneIndex = 14;
+const int leftThumbIndex = 15;
+const int leftFingerBaseIndex = 16;
+const int leftFingerIndex = 17;
 // Right arm
 const int rightShoulderBoneIndex = 21;
 const int rightArmBoneIndex = 22;
 const int rightForeArmBoneIndex = 23;
 const int rightHandBoneIndex = 24;
+const int rightThumbIndex = 25;
+const int rightFingerBaseIndex = 26;
+const int rightFingerIndex = 27;
 // Left foot
 const int leftUpLegBoneIndex = 4;
 const int leftLegBoneIndex = 5;

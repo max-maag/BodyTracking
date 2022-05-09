@@ -2,10 +2,12 @@
 
 #include <optional>
 #include <array>
+#include <queue>
+#include <algorithm>
 #include <Kore/IO/FileReader.h>
 #include <Kore/Graphics4/PipelineState.h>
 #include <Kore/Graphics1/Color.h>
-//#include <Kore/Graphics2/Graphics.h>
+#include <Kore/Graphics2/Graphics.h>
 #include <Kore/Input/Keyboard.h>
 #include <Kore/Input/Mouse.h>
 #include <Kore/Audio2/Audio.h>
@@ -22,10 +24,7 @@
 #include "Logger.h"
 #include "JacobianIK.h"
 #include "GAP/FABRIKSolver.h"
-#include "Utils/StaticMeshBuilder.h"
-#include "Utils/StaticMeshRenderer.h"
-
-#include <algorithm> // std::sort, std::copy
+#include "Utils/OverlayRenderer.h"
 
 #ifdef KORE_STEAMVR
 #include <Kore/Vr/VrInterface.h>
@@ -80,9 +79,13 @@ namespace {
 		std::make_shared<JacobianIK>(JacobianIKMode::SVD_DLS,	20,		0.001,	0.01),
 		std::make_shared<JacobianIK>(JacobianIKMode::SDLS,		20,		0.01,	0.01)
 		*/
-		std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01),
-		//std::make_shared<FABRIKSolver>(1000, 0.1, 0.1)
+
+		
+		//std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01)
+		std::make_shared<FABRIKSolver>(10, 0.1, 0.1)
 	};
+
+	 IKSolver* ikSolver = &*IK_SOLVERS.front();
 
 
 	size_t ikMode = 0;
@@ -91,12 +94,50 @@ namespace {
 	const int width = 1024;
 	const int height = 768;
 	
-	const bool renderRoom = false;
-	const bool renderTrackerAndController = true;
-	const bool renderAxisForEndEffector = false;
+	struct {
+		struct {
+			bool enabled = true;
+
+			struct {
+				bool enabled = true;
+				bool names = false;
+
+				constexpr operator bool() const noexcept {
+					return enabled;
+				}
+			} skeleton;
+
+
+			struct {
+				bool enabled = true;
+				bool names = false;
+
+				constexpr operator bool() const noexcept {
+					return enabled;
+				}
+			} endEffectors;
+
+			constexpr operator bool() const noexcept {
+				return enabled;
+			}
+		} overlay;
+
+		bool room = true;
+		bool avatar = true;
+		bool trackerAndControllers = true;
+		bool axisForEndEffectors = false;
+	} renderOptions;
+
+	bool isDebuggingIk = false;
+	std::vector<Kore::vec3> debugIkPositions;
 
 	// If true, pause animation of non-VR play-back
-	bool shouldPauseAnimation = false;
+	bool shouldPauseAnimation = true;
+
+	// If true, pause after next frame of non-VR play-back
+	bool shouldStepAnimation = false;
+
+	size_t idxBoneDisplay = 0;
 	
 	EndEffector** endEffector;
 	const int numOfEndEffectors = 10;
@@ -154,23 +195,26 @@ namespace {
 	MeshObject* viveObjects[] = { nullptr, nullptr, nullptr };
 	Avatar* avatar;
 	LivingRoom* livingRoom;
+
+	Skeleton* skeletonAvatarIk;
 	
 	// Variables to mirror the room and the avatar
 	vec3 mirrorOver(6.057f, 0.0f, 0.04f);
 	
-	mat4 initTrans;
-	mat4 initTransInv;
-	Kore::Quaternion initRot;
-	Kore::Quaternion initRotInv;
+	mat4 transformationAvatarToWorld;
+	mat4 transformationWorldToAvatar;
+	Kore::Quaternion rotationWorldToAvatar;
+	Kore::Quaternion rotationAvatarToWorld;
 
 	std::optional<std::array<IKEvaluator, numEndEffectors>> ikEvaluators = Settings::eval ? std::make_optional(std::array<IKEvaluator, numEndEffectors>()) : std::nullopt;
 
-	//std::unique_ptr<Kore::Graphics2::Graphics2> graphics2D;
+	OverlayRenderer overlayRenderer(width, height);
+	Kravur* fontOpenSans32;
+	Kravur* fontOpenSans20;
+
+	std::queue<std::unordered_map<const BoneNode*, Kore::vec3>> ikSteps;
 	
 	bool calibratedAvatar = false;
-
-	
-	static const Kore::mat4 JOINT_AXES_SCALE = Kore::mat4::Scale(0.5);
 	
 #ifdef KORE_STEAMVR
 	bool controllerButtonsInitialized = false;
@@ -178,15 +222,12 @@ namespace {
 	bool firstPersonMonitor = false;
 #endif
 	
-	mat4 getBoneTransform(BoneNode* bone) {
-		return /* initRot.invert().matrix() */ bone->combined;
-		/*
-		vec3 endEffectorPos = bone->getPosition();
-		endEffectorPos = initTrans * vec4(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z(), 1);
-		Kore::Quaternion endEffectorRot = initRot.rotated(bone->getOrientation());
+	Kore::vec4 v4(Kore::vec3 v) {
+		return Kore::vec4(v, 1);
+	}
 
-		return mat4::Translation(endEffectorPos.x(), endEffectorPos.y(), endEffectorPos.z()) * endEffectorRot.matrix().Transpose();
-		*/
+	mat4 getBoneTransform(const BoneNode& bone) {
+		return transformationAvatarToWorld * bone.combined;
 	}
 
 	// Rennders x,y,z axes using transformLocal as M. Pipeline, P and V need to be set before calling this function.
@@ -205,14 +246,14 @@ namespace {
 		rot.rotate(Kore::Quaternion(vec3(0, 1, 0), Kore::pi));
 		mat4 zMirror = mat4::Identity();
 		zMirror.Set(2, 2 , -1);
-		Kore::mat4 M = zMirror * mat4::Translation(mirrorOver.x(), mirrorOver.y(), mirrorOver.z()) * rot.matrix().Transpose();
+		Kore::mat4 M = zMirror * mat4::Translation(mirrorOver.x(), mirrorOver.y(), mirrorOver.z()) * rot.conjugate().matrix();
 		
 		return M;
 	}
 	
 	void renderControllerAndTracker(int tracker, Kore::vec3 desPosition, Kore::Quaternion desRotation) {
 		// World Transformation Matrix
-		Kore::mat4 W = mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * desRotation.matrix().Transpose();
+		Kore::mat4 W = mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * desRotation.conjugate().matrix();
 		
 		// Mirror Transformation Matrix
 		Kore::mat4 M = getMirrorMatrix() * W;
@@ -270,7 +311,7 @@ namespace {
 		Graphics4::setPipeline(pipeline);
 		
 		for(int i = 0; i < numOfEndEffectors; ++i) {
-			renderAxes(getBoneTransform(avatar->getBoneWithIndex(endEffector[i]->getBoneIndex())));
+			renderAxes(getBoneTransform(avatar->skeleton->getBoneWithIndex(endEffector[i]->getBoneIndex())));
 		}
 	}
 
@@ -278,7 +319,7 @@ namespace {
 		for (int i = 0; i < numOfEndEffectors; ++i) {
 			Kore::vec3 position = endEffector[i]->getFinalPosition();
 			Kore::Quaternion rotation = endEffector[i]->getFinalRotation();
-			renderAxes(Kore::mat4::Translation(position.x(), position.y(), position.z()) * rotation.matrix());
+			renderAxes(transformationAvatarToWorld * Kore::mat4::Translation(position.x(), position.y(), position.z()) * rotation.conjugate().matrix());
 		}
 	}
 	
@@ -298,11 +339,11 @@ namespace {
 		
 		Graphics4::setMatrix(vLocation, V);
 		Graphics4::setMatrix(pLocation, P);
-		Graphics4::setMatrix(mLocation, initTrans);
+		Graphics4::setMatrix(mLocation, transformationAvatarToWorld);
 		avatar->animate(tex);
 		
 		// Mirror the avatar
-		mat4 initTransMirror = getMirrorMatrix() * initTrans;
+		mat4 initTransMirror = getMirrorMatrix() * transformationAvatarToWorld;
 		
 		Graphics4::setMatrix(mLocation, initTransMirror);
 		avatar->animate(tex);
@@ -325,8 +366,12 @@ namespace {
 	}
 	
 	void executeMovement(int endEffectorID) {
+		Kore::log(Kore::LogLevel::Info, "%-40s%s", "Main::executeMovement", endEffector[endEffectorID]->getName());
+
 		Kore::vec3 desPosition = endEffector[endEffectorID]->getDesPosition();
 		Kore::Quaternion desRotation = endEffector[endEffectorID]->getDesRotation();
+
+		Kore::log(Kore::LogLevel::Info, "%-40s%-40s% .6f  % .6f  % .6f", "Main::executeMovement", "tracker position local", desPosition.x(), desPosition.y(), desPosition.z());
 
 		// Save raw data
 		if (Settings::logRawData) {
@@ -335,43 +380,49 @@ namespace {
 		
 		if (calibratedAvatar) {
 			// Transform desired position/rotation to the character local coordinate system
-			desPosition = initTransInv * vec4(desPosition.x(), desPosition.y(), desPosition.z(), 1);
-			desRotation = initRotInv.rotated(desRotation);
+			desPosition = transformationWorldToAvatar * vec4(desPosition.x(), desPosition.y(), desPosition.z(), 1);
+			desRotation = rotationAvatarToWorld.rotated(desRotation);
+
+			Kore::log(Kore::LogLevel::Info, "%-40s%-40s% .6f  % .6f  % .6f", "Main::executeMovement", "tracker position avatar", desPosition.x(), desPosition.y(), desPosition.z());
 
 			// Add offset
 			Kore::Quaternion offsetRotation = endEffector[endEffectorID]->getOffsetRotation();
 			vec3 offsetPosition = endEffector[endEffectorID]->getOffsetPosition();
 			Kore::Quaternion finalRot = desRotation.rotated(offsetRotation);
-			vec3 finalPos = mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * finalRot.matrix().Transpose() * mat4::Translation(offsetPosition.x(), offsetPosition.y(), offsetPosition.z()) * vec4(0, 0, 0, 1);
+			vec3 finalPos = mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * finalRot.conjugate().matrix() * mat4::Translation(offsetPosition.x(), offsetPosition.y(), offsetPosition.z()) * vec4(0, 0, 0, 1);
+
+			Kore::log(Kore::LogLevel::Info, "%-40s%-40s% .6f  % .6f  % .6f", "Main::executeMovement", "bone position", finalPos.x(), finalPos.y(), finalPos.z());
 
 			endEffector[endEffectorID]->setFinalPosition(finalPos);
 			endEffector[endEffectorID]->setFinalRotation(finalRot);
 			
+			BoneNode& bone = skeletonAvatarIk->getBoneWithIndex(endEffector[endEffectorID]->getBoneIndex());
+
 			if (endEffectorID == hip) {
-				avatar->setFixedPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot);
+				skeletonAvatarIk->setFixedPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot);
 			} else if (endEffectorID == head) {
-				avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
+				ikSolver->solve(&bone, finalPos, finalRot, getIkEvaluator(endEffectorID));
 			} else if (endEffectorID == leftForeArm || endEffectorID == rightForeArm) {
 				if (!Settings::simpleIK)
-					avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
+					ikSolver->solve(&bone, finalPos, finalRot, getIkEvaluator(endEffectorID));
 			} else if (endEffectorID == leftFoot || endEffectorID == rightFoot) {
-				avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
+				ikSolver->solve(&bone, finalPos, finalRot, getIkEvaluator(endEffectorID));
 			} else if (endEffectorID == leftHand || endEffectorID == rightHand) {
 				if (Settings::simpleIK) {
-					avatar->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot, getIkEvaluator(endEffectorID));
+					ikSolver->solve(&bone, finalPos, finalRot, getIkEvaluator(endEffectorID));
 				} else {
-					avatar->setFixedOrientation(endEffector[endEffectorID]->getBoneIndex(), finalRot);
+					skeletonAvatarIk->setFixedOrientation(endEffector[endEffectorID]->getBoneIndex(), finalRot);
 				}
 			}
 		}
 	}
 	
 	void initTransAndRot() {
-		initRot = Kore::Quaternion(0, 0, 0, 1);
-		initRot.rotate(Kore::Quaternion(vec3(1, 0, 0), -Kore::pi / 2.0));
-		initRot.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi / 2.0));
-		initRot.normalize();
-		initRotInv = initRot.invert();
+		rotationWorldToAvatar = Kore::Quaternion(0, 0, 0, 1);
+		rotationWorldToAvatar.rotate(Kore::Quaternion(vec3(1, 0, 0), -Kore::pi / 2.0));
+		rotationWorldToAvatar.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi / 2.0));
+		rotationWorldToAvatar.normalize();
+		rotationAvatarToWorld = rotationWorldToAvatar.invert();
 		
 		// Move character in the middle of both feet
 		Kore::vec3 initPos = Kore::vec3(0, 0, 0);
@@ -380,8 +431,8 @@ namespace {
 		//initPos = (posRightFoot + posLeftFoot) / 2.0f;
 		initPos.y() = 0.0f;
 
-		initTrans = mat4::Translation(initPos.x(), initPos.y(), initPos.z()) * initRot.matrix().Transpose();
-		initTransInv = initTrans.Invert();
+		transformationAvatarToWorld = mat4::Translation(initPos.x(), initPos.y(), initPos.z()) * rotationWorldToAvatar.conjugate().matrix();
+		transformationWorldToAvatar = transformationAvatarToWorld.Invert();
 	}
 	
 	void calibrate() {
@@ -392,15 +443,15 @@ namespace {
 			Kore::Quaternion desRotation = endEffector[i]->getDesRotation();
 			
 			// Transform desired position/rotation to the character local coordinate system
-			desPosition = initTransInv * vec4(desPosition.x(), desPosition.y(), desPosition.z(), 1);
-			desRotation = initRotInv.rotated(desRotation);
+			desPosition = transformationWorldToAvatar * vec4(desPosition.x(), desPosition.y(), desPosition.z(), 1);
+			desRotation = rotationAvatarToWorld.rotated(desRotation);
 			
 			// Get actual position/rotation of the character skeleton
-			BoneNode* bone = avatar->getBoneWithIndex(endEffector[i]->getBoneIndex());
-			vec3 targetPos = bone->getPosition();
-			Kore::Quaternion targetRot = bone->getOrientation();
+			BoneNode& bone = avatar->skeleton->getBoneWithIndex(endEffector[i]->getBoneIndex());
+			vec3 targetPos = bone.getPosition();
+			Kore::Quaternion targetRot = bone.getOrientation();
 			
-			endEffector[i]->setOffsetPosition((mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * targetRot.matrix().Transpose()).Invert() * mat4::Translation(targetPos.x(), targetPos.y(), targetPos.z()) * vec4(0, 0, 0, 1));
+			endEffector[i]->setOffsetPosition((mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * targetRot.conjugate().matrix()).Invert() * mat4::Translation(targetPos.x(), targetPos.y(), targetPos.z()) * vec4(0, 0, 0, 1));
 			endEffector[i]->setOffsetRotation((desRotation.invert()).rotated(targetRot));
 		}
 	}
@@ -578,26 +629,401 @@ void record() {
 	}
 #endif
 
+
+	void handleIkEvent(FABRIKSolver::EventType eventType, std::unordered_map<const BoneNode*, Kore::vec3> jointPositions) {
+		ikSteps.push(jointPositions);
+	}
+
 	void renderBones(Kore::mat4 V, Kore::mat4 P) {
 		Kore::Graphics4::setPipeline(pipeline);
 		Kore::Graphics4::setMatrix(pLocation, P);
 		Kore::Graphics4::setMatrix(vLocation, V);
+		
+		for (size_t idxBone = 0; idxBone < avatar->skeleton->bones.size(); ++idxBone) {
+			BoneNode& bone = avatar->skeleton->bones[idxBone];
 
-		for (size_t idxBone = 0; idxBone < avatar->bones.size(); ++idxBone) {
-			BoneNode* bone = avatar->bones[idxBone];
-
-			bone->initialize();
+			bone.initialize();
 
 			renderAxes(
 				getBoneTransform(bone) *
-				JOINT_AXES_SCALE
+				//mat4::Scale(0.5f, 6 * boneLength, 0.5f)
+				mat4::Scale(0.5f)
 			);
 		}
+		
+		BoneNode& bone = avatar->skeleton->bones[idxBoneDisplay];
+
+		vec3 pos = bone.getPosition();
+
+		Kore::Quaternion q;
+		RotationUtility::getOrientation(&bone.combined, &q);
+
+		renderAxes(transformationAvatarToWorld * mat4::Translation(pos.x(), pos.y(), pos.z()) * q.conjugate().matrix() * mat4::Scale(3.f));
 	}
 
 	bool shouldAdvanceAnimation(float timeSinceStart) {
-		return !shouldPauseAnimation && (timeSinceStart - lastFrameTime) >= fpsLimit;
+		return (timeSinceStart - lastFrameTime) >= fpsLimit;
 	}
+
+	// overlayRenderer.begin() must be called before
+	void renderSkeletonOverlay() {
+		auto getPos = [](const BoneNode& bone) {
+			if (isDebuggingIk && !debugIkPositions.empty()) {
+				return v4(debugIkPositions[bone.nodeIndex - 1]);
+			}
+			else {
+				return v4(bone.getPosition());
+			}
+		};
+
+		for (const BoneNode& bone : avatar->skeleton->bones) {
+			if (bone.initialized) {
+				const bool isFingerBone = bone.nodeIndex == leftThumbIndex || bone.nodeIndex == leftFingerBaseIndex || bone.nodeIndex == leftFingerIndex ||
+					bone.nodeIndex == rightThumbIndex || bone.nodeIndex == rightFingerBaseIndex || bone.nodeIndex == rightFingerIndex;
+
+				if (!(Settings::simpleIK && isFingerBone)) {
+					Kore::vec4 positionBone = transformationAvatarToWorld * getPos(bone);
+
+					if (bone.parent && bone.parent->initialized) {
+						Kore::vec4 positionParent = transformationAvatarToWorld * getPos(*bone.parent);
+
+						overlayRenderer.drawLine(positionParent, positionBone, 3);
+					}
+
+					overlayRenderer.drawSquare(positionBone, 7, Kore::Graphics2::Color::Red);
+
+					if (renderOptions.overlay.skeleton.names) {
+						overlayRenderer.drawText(bone.boneName, positionBone, Kore::vec2(0, 3));
+					}
+				}
+			}
+		}
+	}
+
+
+	// overlayRenderer.begin() must be called before
+	void renderEndeffectorOverlay() {
+		for (int i = 0; i < numOfEndEffectors; ++i) {
+			BoneNode* bone = &avatar->skeleton->getBoneWithIndex(endEffector[i]->getBoneIndex());
+
+			Kore::vec4 position = transformationAvatarToWorld * v4(endEffector[i]->getFinalPosition());
+
+			overlayRenderer.drawSquare(position, 7, Graphics2::Color::Green);
+
+			if (renderOptions.overlay.endEffectors.names) {
+				overlayRenderer.drawText(endEffector[i]->getName(), position, Kore::vec2(0, 3));
+			}
+		}
+	}
+
+	void renderOverlay(Kore::mat4 matrixProjection3d, Kore::mat4 matrixView3d) {
+		overlayRenderer.begin(matrixProjection3d, matrixView3d);
+
+		overlayRenderer.setFont(fontOpenSans20);
+
+		if (renderOptions.overlay.skeleton) {
+			renderSkeletonOverlay();
+		}
+
+		if (renderOptions.overlay.endEffectors) {
+			renderEndeffectorOverlay();
+		}
+
+		overlayRenderer.drawLine(Kore::vec4(0, 0, 0, 1), Kore::vec4(0.1, 0, 0, 1), 3, Kore::Graphics2::Color::Red);
+		overlayRenderer.drawLine(Kore::vec4(0, 0, 0, 1), Kore::vec4(0, 0.1, 0, 1), 3, Kore::Graphics2::Color::Green);
+		overlayRenderer.drawLine(Kore::vec4(0, 0, 0, 1), Kore::vec4(0, 0, 0.1, 1), 3, Kore::Graphics2::Color::Blue);
+
+		overlayRenderer.end();
+	}
+
+	void loadNextAnimationFrame(float timeSinceStart) {
+		float scaleFactor;
+		EndEffectorIndices indices[numOfEndEffectors];
+		Kore::vec3 desPosition[numOfEndEffectors];
+		Kore::Quaternion desRotation[numOfEndEffectors];
+		if (currentFile < Settings::files.size()) {
+			bool dataAvailable = logger->readData(numOfEndEffectors, Settings::files[currentFile].c_str(), desPosition, desRotation, indices, scaleFactor);
+
+			if (dataAvailable) {
+				for (int i = 0; i < numOfEndEffectors; ++i) {
+					EndEffectorIndices index = indices[i];
+					endEffector[index]->setDesPosition(desPosition[i]);
+					endEffector[index]->setDesRotation(desRotation[i]);
+				}
+			}
+
+			if (!calibratedAvatar) {
+				avatar->skeleton->reset();
+				avatar->setScale(scaleFactor);
+				calibrate();
+				calibratedAvatar = true;
+
+				if (Settings::eval) {
+					for (auto& evaluator : ikEvaluators.value()) {
+						evaluator.clear();
+					}
+				}
+			}
+
+			//*skeletonAvatarIk = *avatar->skeleton;
+
+			// TODO why does swapping the skeletons behave differently from just using one skeleton?
+			//skeletonAvatarIk = avatar->skeleton;
+			for (int i = 0; i < numOfEndEffectors; ++i) {
+				executeMovement(i);
+			}
+
+			if (!dataAvailable) {
+
+				if (Settings::eval) {
+
+					std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector;
+					IKEvaluator::RunStatsAverage ikStatsTotal;
+
+					// get average run stats per end effector and sum averages for total stats
+					for (size_t idxEndEffector = 0; idxEndEffector < ikStatsPerEndEffector.size(); idxEndEffector++) {
+						IKEvaluator::RunStatsAverage rsa = ikEvaluators.value()[idxEndEffector].getAverage();
+						ikStatsPerEndEffector[idxEndEffector] = rsa;
+
+						ikStatsTotal.numIterations.average += rsa.numIterations.average;
+						ikStatsTotal.durationsMs.average += rsa.durationsMs.average;
+						ikStatsTotal.durationAveragePerIterationMs.average += rsa.durationAveragePerIterationMs.average;
+						ikStatsTotal.errorPositionMm.average += rsa.errorPositionMm.average;
+						ikStatsTotal.errorRotation.average += rsa.errorRotation.average;
+						ikStatsTotal.targetReachedPercent += rsa.targetReachedPercent;
+						ikStatsTotal.stuckPercent += rsa.stuckPercent;
+					}
+
+					ikStatsTotal.numIterations.average /= numEndEffectors;
+					ikStatsTotal.durationsMs.average /= numEndEffectors;
+					ikStatsTotal.durationAveragePerIterationMs.average /= numEndEffectors;
+					ikStatsTotal.errorPositionMm.average /= numEndEffectors;
+					ikStatsTotal.errorRotation.average /= numEndEffectors;
+					ikStatsTotal.targetReachedPercent /= numEndEffectors;
+					ikStatsTotal.stuckPercent /= numEndEffectors;
+
+					// calculate deviation of total stats
+					for (size_t idxEndEffector = 0; idxEndEffector < ikStatsPerEndEffector.size(); idxEndEffector++) {
+						IKEvaluator::RunStatsAverage statsEndEffector = ikEvaluators.value()[idxEndEffector].getAverage();
+
+						ikStatsTotal.numIterations.deviation += Kore::pow(statsEndEffector.numIterations.average - ikStatsTotal.numIterations.average, 2);
+						ikStatsTotal.durationsMs.deviation += Kore::pow(statsEndEffector.durationsMs.average - ikStatsTotal.durationsMs.average, 2);
+						ikStatsTotal.durationAveragePerIterationMs.deviation += Kore::pow(statsEndEffector.durationAveragePerIterationMs.average - ikStatsTotal.durationAveragePerIterationMs.average, 2);
+						ikStatsTotal.errorPositionMm.deviation += Kore::pow(statsEndEffector.errorPositionMm.average - ikStatsTotal.errorPositionMm.average, 2);
+						ikStatsTotal.errorRotation.deviation += Kore::pow(statsEndEffector.errorRotation.average - ikStatsTotal.errorRotation.average, 2);
+					}
+
+					ikStatsTotal.numIterations.deviation = Kore::sqrt(ikStatsTotal.numIterations.deviation / numEndEffectors);
+					ikStatsTotal.durationsMs.deviation = Kore::sqrt(ikStatsTotal.durationsMs.deviation / numEndEffectors);
+					ikStatsTotal.durationAveragePerIterationMs.deviation = Kore::sqrt(ikStatsTotal.durationAveragePerIterationMs.deviation / numEndEffectors);
+					ikStatsTotal.errorPositionMm.deviation = Kore::sqrt(ikStatsTotal.errorPositionMm.deviation / numEndEffectors);
+					ikStatsTotal.errorRotation.deviation = Kore::sqrt(ikStatsTotal.errorRotation.deviation / numEndEffectors);
+
+					for (size_t idxEndEffector = 0; idxEndEffector < numEndEffectors; idxEndEffector++) {
+						Kore::log(
+							LogLevel::Info,
+							"Error %s = %f, %f",
+							endEffector[idxEndEffector]->getName(),
+							ikStatsPerEndEffector[idxEndEffector].errorPositionMm.average,
+							ikStatsPerEndEffector[idxEndEffector].errorRotation.average
+						);
+					}
+
+					Kore::log(
+						LogLevel::Info,
+						"Overall Error Pos = %f +- %f, Rot = %f +- %f",
+						ikStatsTotal.errorPositionMm.average,
+						ikStatsTotal.errorPositionMm.deviation,
+						ikStatsTotal.errorRotation.average,
+						ikStatsTotal.errorRotation.deviation
+					);
+
+					logger->saveEvaluationData(
+						Settings::files[currentFile],
+						*ikSolver,
+						ikStatsTotal,
+						ikStatsPerEndEffector);
+
+					if (FLOAT_EQ(evalValue[ikMode], evalMaxValue[ikMode])) {
+						//if (evalValue[ikMode] >= evalMaxValue[ikMode]) {
+						logger->endEvaluationLogger();
+
+						evalValue[ikMode] = evalInitValue[ikMode];
+
+
+						ikMode = ikMode + 1;
+						if (ikMode > Settings::evalMaxIk) {
+							ikMode = Settings::evalMinIk;
+							currentFile++;
+						}
+
+						ikSolver = &*IK_SOLVERS[ikMode];
+
+						FABRIKSolver* fabrikSolver = dynamic_cast<FABRIKSolver*>(ikSolver);
+						if (fabrikSolver) {
+							fabrikSolver->addListener(&handleIkEvent);
+						}
+					}
+					else {
+						evalValue[ikMode] += evalStep[ikMode];
+					}
+
+					calibratedAvatar = false;
+
+				}
+				else {
+					currentFile++;
+					calibratedAvatar = false;
+				}
+			}
+		}
+		else {
+			System::stop();
+		}
+		lastFrameTime = timeSinceStart;
+	}
+
+
+
+	void updateAvatar(float timeSinceStart) {
+#ifdef KORE_STEAMVR
+		VrInterface::begin();
+
+		if (!controllerButtonsInitialized) initButtons();
+
+		VrPoseState vrDevice;
+		for (int i = 0; i < numOfEndEffectors; ++i) {
+			if (endEffector[i]->getDeviceIndex() != -1) {
+
+				if (i == head) {
+					SensorState state = VrInterface::getSensorState(0);
+
+					// Get HMD position and rotation
+					endEffector[i]->setDesPosition(state.pose.vrPose.position);
+					endEffector[i]->setDesRotation(state.pose.vrPose.orientation);
+				}
+				else {
+					vrDevice = VrInterface::getController(endEffector[i]->getDeviceIndex());
+
+					// Get VR device position and rotation
+					endEffector[i]->setDesPosition(vrDevice.vrPose.position);
+					endEffector[i]->setDesRotation(vrDevice.vrPose.orientation);
+				}
+
+				executeMovement(i);
+			}
+		}
+#else
+		if (isDebuggingIk && !ikSteps.empty()) {
+			if (debugIkPositions.empty()) {
+				debugIkPositions.resize(avatar->skeleton->bones.size());
+
+				for (size_t idxBone = 0; idxBone < avatar->skeleton->bones.size(); ++idxBone) {
+					debugIkPositions[idxBone] = avatar->skeleton->bones[idxBone].getPosition();
+				}
+			}
+
+			for (const auto& pair : ikSteps.front()) {
+				const BoneNode* bone = pair.first;
+				Kore::vec3 position = pair.second;
+
+				debugIkPositions[bone->nodeIndex - 1] = position;
+			}
+
+			ikSteps.pop();
+		}
+		else if (shouldAdvanceAnimation(timeSinceStart)) {
+				loadNextAnimationFrame(timeSinceStart);
+				debugIkPositions.clear();
+		}
+
+		//std::swap(avatar->skeleton, skeletonAvatarIk);
+#endif
+	}
+
+
+	void render() {
+		Graphics4::begin();
+		Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
+
+
+		// Get projection and view matrix
+		mat4 P = getProjectionMatrix();
+		mat4 V = getViewMatrix();
+
+
+		Graphics4::setPipeline(pipeline);
+
+#ifdef KORE_STEAMVR
+		// Render for both eyes
+		SensorState state;
+		for (int j = 0; j < 2; ++j) {
+			VrInterface::beginRender(j);
+
+			Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
+
+			state = VrInterface::getSensorState(j);
+
+			renderAvatar(state.pose.vrPose.eye, state.pose.vrPose.projection);
+
+			if (renderTrackerAndController) renderAllVRDevices();
+
+			if (renderAxisForEndEffector) renderCSForEndEffector();
+
+			if (renderRoom) renderLivingRoom(state.pose.vrPose.eye, state.pose.vrPose.projection);
+
+			VrInterface::endRender(j);
+		}
+
+		VrInterface::warpSwap();
+
+		Graphics4::restoreRenderTarget();
+		Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
+
+		// Render on monitor
+
+		if (!firstPersonMonitor) renderAvatar(V, P);
+		else renderAvatar(state.pose.vrPose.eye, state.pose.vrPose.projection);
+
+		if (renderTrackerAndController) renderAllVRDevices();
+
+		if (renderAxisForEndEffector) renderCSForEndEffector();
+
+		if (renderRoom) {
+			if (!firstPersonMonitor) renderLivingRoom(V, P);
+			else renderLivingRoom(state.pose.vrPose.eye, state.pose.vrPose.projection);
+		}
+#else
+		if (renderOptions.avatar) {
+			renderAvatar(V, P);
+		}
+		else {
+			Graphics4::setMatrix(vLocation, V);
+			Graphics4::setMatrix(pLocation, P);
+		}
+
+		if (renderOptions.trackerAndControllers) {
+			renderAllVRDevices();
+		}
+
+		if (renderOptions.axisForEndEffectors) {
+			renderCSForEndEffector();
+		}
+
+		if (renderOptions.room) {
+			renderLivingRoom(V, P);
+		}
+#endif
+
+		Graphics4::end();
+
+		if (renderOptions.overlay) {
+			renderOverlay(P, V);
+		}
+
+		Graphics4::swapBuffers();
+	}
+
 
 	void update() {
 		float t = (float)(System::time() - startTime);
@@ -611,238 +1037,19 @@ void record() {
 		if (A) cameraPos += camRight * (float)deltaT * cameraMoveSpeed;
 		if (D) cameraPos -= camRight * (float)deltaT * cameraMoveSpeed;
 		
-		Graphics4::begin();
-		Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
-		Graphics4::setPipeline(pipeline);
-		
-#ifdef KORE_STEAMVR
-		VrInterface::begin();
 
-		if (!controllerButtonsInitialized) initButtons();
-		
-		VrPoseState vrDevice;
-		for (int i = 0; i < numOfEndEffectors; ++i) {
-			if (endEffector[i]->getDeviceIndex() != -1) {
-
-				if (i == head) {
-					SensorState state = VrInterface::getSensorState(0);
-
-					// Get HMD position and rotation
-					endEffector[i]->setDesPosition(state.pose.vrPose.position);
-					endEffector[i]->setDesRotation(state.pose.vrPose.orientation);
-				} else {
-					vrDevice = VrInterface::getController(endEffector[i]->getDeviceIndex());
-
-					// Get VR device position and rotation
-					endEffector[i]->setDesPosition(vrDevice.vrPose.position);
-					endEffector[i]->setDesRotation(vrDevice.vrPose.orientation);
-				}
-
-				executeMovement(i);
-			}
+		if (!shouldPauseAnimation) {
+			updateAvatar(t);
 		}
-		
-		// Render for both eyes
-		SensorState state;
-		for (int j = 0; j < 2; ++j) {
-			VrInterface::beginRender(j);
-			
-			Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
-			
-			state = VrInterface::getSensorState(j);
-			
-			renderAvatar(state.pose.vrPose.eye, state.pose.vrPose.projection);
-			
-			if (renderTrackerAndController) renderAllVRDevices();
-			
-			if (renderAxisForEndEffector) renderCSForEndEffector();
-			
-			if (renderRoom) renderLivingRoom(state.pose.vrPose.eye, state.pose.vrPose.projection);
-			
-			VrInterface::endRender(j);
+
+		render();
+
+		if (shouldStepAnimation) {
+			shouldPauseAnimation = true;
+			shouldStepAnimation = false;
 		}
-		
-		VrInterface::warpSwap();
-		
-		Graphics4::restoreRenderTarget();
-		Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
-		
-		// Render on monitor
-		mat4 P = getProjectionMatrix();
-		mat4 V = getViewMatrix();
-
-		if (!firstPersonMonitor) renderAvatar(V, P);
-		else renderAvatar(state.pose.vrPose.eye, state.pose.vrPose.projection);
-		
-		if (renderTrackerAndController) renderAllVRDevices();
-		
-		if (renderAxisForEndEffector) renderCSForEndEffector();
-		
-		if (renderRoom) {
-			if (!firstPersonMonitor) renderLivingRoom(V, P);
-			else renderLivingRoom(state.pose.vrPose.eye, state.pose.vrPose.projection);
-		}
-#else
-		// Read line
-		if (shouldAdvanceAnimation(t)) {
-			float scaleFactor;
-			EndEffectorIndices indices[numOfEndEffectors];
-			Kore::vec3 desPosition[numOfEndEffectors];
-			Kore::Quaternion desRotation[numOfEndEffectors];
-			if (currentFile < Settings::files.size()) {
-				bool dataAvailable = logger->readData(numOfEndEffectors, Settings::files[currentFile].c_str(), desPosition, desRotation, indices, scaleFactor);
-
-				if (dataAvailable) {
-					for (int i = 0; i < numOfEndEffectors; ++i) {
-						EndEffectorIndices index = indices[i];
-						endEffector[index]->setDesPosition(desPosition[i]);
-						endEffector[index]->setDesRotation(desRotation[i]);
-					}
-				}
-
-				if (!calibratedAvatar) {
-					avatar->resetPositionAndRotation();
-					avatar->setScale(scaleFactor);
-					calibrate();
-					calibratedAvatar = true;
-
-					if (Settings::eval) {
-						for (auto& evaluator : ikEvaluators.value()) {
-							evaluator.clear();
-						}
-					}
-				}
-
-				for (int i = 0; i < numOfEndEffectors; ++i) {
-					executeMovement(i);
-				}
-
-				if (!dataAvailable) {
-
-					if (Settings::eval) {
-
-						std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector;
-						IKEvaluator::RunStatsAverage ikStatsTotal;
-
-						// get average run stats per end effector and sum averages for total stats
-						for (size_t idxEndEffector = 0; idxEndEffector < ikStatsPerEndEffector.size(); idxEndEffector++) {
-							IKEvaluator::RunStatsAverage rsa = ikEvaluators.value()[idxEndEffector].getAverage();
-							ikStatsPerEndEffector[idxEndEffector] = rsa;
-
-							ikStatsTotal.numIterations.average += rsa.numIterations.average;
-							ikStatsTotal.durationsMs.average += rsa.durationsMs.average;
-							ikStatsTotal.durationAveragePerIterationMs.average += rsa.durationAveragePerIterationMs.average;
-							ikStatsTotal.errorPositionMm.average += rsa.errorPositionMm.average;
-							ikStatsTotal.errorRotation.average += rsa.errorRotation.average;
-							ikStatsTotal.targetReachedPercent += rsa.targetReachedPercent;
-							ikStatsTotal.stuckPercent += rsa.stuckPercent;
-						}
-
-						ikStatsTotal.numIterations.average /= numEndEffectors;
-						ikStatsTotal.durationsMs.average /= numEndEffectors;
-						ikStatsTotal.durationAveragePerIterationMs.average /= numEndEffectors;
-						ikStatsTotal.errorPositionMm.average /= numEndEffectors;
-						ikStatsTotal.errorRotation.average /= numEndEffectors;
-						ikStatsTotal.targetReachedPercent /= numEndEffectors;
-						ikStatsTotal.stuckPercent /= numEndEffectors;
-
-						// calculate deviation of total stats
-						for (size_t idxEndEffector = 0; idxEndEffector < ikStatsPerEndEffector.size(); idxEndEffector++) {
-							IKEvaluator::RunStatsAverage statsEndEffector = ikEvaluators.value()[idxEndEffector].getAverage();
-
-							ikStatsTotal.numIterations.deviation += Kore::pow(statsEndEffector.numIterations.average - ikStatsTotal.numIterations.average, 2);
-							ikStatsTotal.durationsMs.deviation += Kore::pow(statsEndEffector.durationsMs.average - ikStatsTotal.durationsMs.average, 2);
-							ikStatsTotal.durationAveragePerIterationMs.deviation += Kore::pow(statsEndEffector.durationAveragePerIterationMs.average - ikStatsTotal.durationAveragePerIterationMs.average, 2);
-							ikStatsTotal.errorPositionMm.deviation += Kore::pow(statsEndEffector.errorPositionMm.average - ikStatsTotal.errorPositionMm.average, 2);
-							ikStatsTotal.errorRotation.deviation += Kore::pow(statsEndEffector.errorRotation.average - ikStatsTotal.errorRotation.average, 2);
-						}
-
-						ikStatsTotal.numIterations.deviation = Kore::sqrt(ikStatsTotal.numIterations.deviation / numEndEffectors);
-						ikStatsTotal.durationsMs.deviation = Kore::sqrt(ikStatsTotal.durationsMs.deviation / numEndEffectors);
-						ikStatsTotal.durationAveragePerIterationMs.deviation = Kore::sqrt(ikStatsTotal.durationAveragePerIterationMs.deviation / numEndEffectors);
-						ikStatsTotal.errorPositionMm.deviation = Kore::sqrt(ikStatsTotal.errorPositionMm.deviation / numEndEffectors);
-						ikStatsTotal.errorRotation.deviation = Kore::sqrt(ikStatsTotal.errorRotation.deviation / numEndEffectors);
-
-						for (size_t idxEndEffector = 0; idxEndEffector < numEndEffectors; idxEndEffector++) {
-							Kore::log(
-								LogLevel::Info,
-								"Error %s = %f, %f",
-								endEffector[idxEndEffector]->getName(),
-								ikStatsPerEndEffector[idxEndEffector].errorPositionMm.average,
-								ikStatsPerEndEffector[idxEndEffector].errorRotation.average
-							);
-						}
-
-						Kore::log(
-							LogLevel::Info,
-							"Overall Error Pos = %f +- %f, Rot = %f +- %f",
-							ikStatsTotal.errorPositionMm.average,
-							ikStatsTotal.errorPositionMm.deviation,
-							ikStatsTotal.errorRotation.average,
-							ikStatsTotal.errorRotation.deviation
-						);
-
-						logger->saveEvaluationData(
-							Settings::files[currentFile],
-							avatar->getIkSolver(),
-							ikStatsTotal,
-							ikStatsPerEndEffector);
-
-						if (FLOAT_EQ(evalValue[ikMode], evalMaxValue[ikMode])) {
-							//if (evalValue[ikMode] >= evalMaxValue[ikMode]) {
-							logger->endEvaluationLogger();
-
-							evalValue[ikMode] = evalInitValue[ikMode];
-
-
-							ikMode = ikMode + 1;
-							if (ikMode > Settings::evalMaxIk) {
-								ikMode = Settings::evalMinIk;
-								currentFile++;
-							}
-
-							avatar->setIkSolver(IK_SOLVERS[ikMode]);
-						}
-						else {
-							evalValue[ikMode] += evalStep[ikMode];
-						}
-
-						calibratedAvatar = false;
-
-					}
-					else {
-						currentFile++;
-						calibratedAvatar = false;
-					}
-				}
-			}
-			else {
-				System::stop();
-			}
-			lastFrameTime = t;
-		}
-		
-		// Get projection and view matrix
-		mat4 P = getProjectionMatrix();
-		mat4 V = getViewMatrix();
-		
-		renderAvatar(V, P);
-		
-		if (renderTrackerAndController) renderAllVRDevices();
-		
-		if (renderAxisForEndEffector) renderCSForEndEffector();
-		
-		if (renderRoom) renderLivingRoom(V, P);
-#endif
-		
-		renderBones(V, P);
-		renderTargets();
-
-		Graphics4::end();
-
-		//graphics2D->begin(true);
-		Graphics4::swapBuffers();
 	}
+
 	
 	void keyDown(KeyCode code) {
 		switch (code) {
@@ -879,7 +1086,29 @@ void record() {
 				break;
 		}
 	}
-	
+
+	void toggleIkDebugging() {
+		isDebuggingIk = !isDebuggingIk;
+
+		if (isDebuggingIk) {
+			shouldStepAnimation = true;
+		} else {
+			debugIkPositions.clear();
+		}
+		/*
+		FABRIKSolver* fabrikSolver = dynamic_cast<FABRIKSolver*>(ikSolver);
+		
+		if (fabrikSolver != nullptr) {
+			if (isDebuggingIk) {
+				fabrikSolver->addListener(&handleIkEvent);
+			}
+			else {
+				fabrikSolver->removeListener(&handleIkEvent);
+			}
+		}
+		*/
+	}
+
 	void keyUp(KeyCode code) {
 		switch (code) {
 			case KeyW:
@@ -897,9 +1126,39 @@ void record() {
 			case KeyL:
 				record();
 				break;
+			case KeyN:
+				if (renderOptions.overlay.skeleton) {
+					renderOptions.overlay.skeleton.names = !renderOptions.overlay.skeleton.names;
+					renderOptions.overlay.endEffectors.names = !renderOptions.overlay.endEffectors.names;
+				}
+				break;
+			case KeyO:
+				renderOptions.overlay.enabled = !renderOptions.overlay.enabled;
+				break;
 			case KeySpace:
 				shouldPauseAnimation = !shouldPauseAnimation;
 				break;
+			case KeyF:
+				shouldPauseAnimation = false;
+				shouldStepAnimation = true;
+				break;
+			case KeyI:
+				toggleIkDebugging();
+				break;
+			case KeyPageUp:
+				if (++idxBoneDisplay >= avatar->skeleton->bones.size()) {
+					idxBoneDisplay = 0;
+				}
+				break;
+			case KeyPageDown:
+				if (idxBoneDisplay == 0) {
+					idxBoneDisplay = avatar->skeleton->bones.size() - 1;
+				}
+				else {
+					idxBoneDisplay--;
+				}
+				break;
+				
 			default:
 				break;
 		}
@@ -999,14 +1258,20 @@ void record() {
 	}
 	
 	void init() {
-		//graphics2D = std::make_unique<Kore::Graphics2::Graphics2>(width, height, true);
+		fontOpenSans32 = Kore::Kravur::load("OpenSans/OpenSans", FontStyle(), 32);
+		fontOpenSans20 = Kore::Kravur::load("OpenSans/OpenSans", FontStyle(), 20);
+
+		overlayRenderer.init();
 
 		loadAvatarShader();
 
-		avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
+		avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure);
 
 		//avatar = new Avatar("avatar/avatar_female.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
 		
+		skeletonAvatarIk = avatar->skeleton; // new Skeleton();
+
+
 		// Set camera initial position and orientation
 		cameraPos = vec3(2.6, 1.8, 0.0);
 		Kore::Quaternion q1(vec3(0.0f, 1.0f, 0.0f), Kore::pi / 2.0f);
@@ -1017,28 +1282,26 @@ void record() {
 		mat4 mat = q2.matrix();
 		camForward = mat * camForward;
 		
-		if (renderTrackerAndController) {
-			viveObjects[0] = new MeshObject("vivemodels/vivetracker.ogex", "vivemodels/", structure, 1);
-			viveObjects[1] = new MeshObject("vivemodels/vivecontroller.ogex", "vivemodels/", structure, 1);
-		}
 		
-		if (true || renderTrackerAndController || renderAxisForEndEffector) {
-			viveObjects[2] = new MeshObject("vivemodels/axis.ogex", "vivemodels/", structure, 1);
-		}
+		viveObjects[0] = new MeshObject("vivemodels/vivetracker.ogex", "vivemodels/", structure, 1);
+		viveObjects[1] = new MeshObject("vivemodels/vivecontroller.ogex", "vivemodels/", structure, 1);
 		
-		if (renderRoom) {
-			loadLivingRoomShader();
-			livingRoom = new LivingRoom("sherlock_living_room/sherlock_living_room.ogex", "sherlock_living_room/", structure_living_room, 1);
-			Kore::Quaternion livingRoomRot = Kore::Quaternion(0, 0, 0, 1);
-			livingRoomRot.rotate(Kore::Quaternion(vec3(1, 0, 0), -Kore::pi / 2.0));
-			livingRoomRot.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi / 2.0));
-			livingRoom->M = mat4::Translation(0, 0, 0) * livingRoomRot.matrix().Transpose();
+		
+		viveObjects[2] = new MeshObject("vivemodels/axis.ogex", "vivemodels/", structure, 1);
+
+		
+		loadLivingRoomShader();
+		livingRoom = new LivingRoom("sherlock_living_room/sherlock_living_room.ogex", "sherlock_living_room/", structure_living_room, 1);
+		Kore::Quaternion livingRoomRot = Kore::Quaternion(0, 0, 0, 1);
+		livingRoomRot.rotate(Kore::Quaternion(vec3(1, 0, 0), -Kore::pi / 2.0));
+		livingRoomRot.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi / 2.0));
+		livingRoom->M = mat4::Translation(0, 0, 0) * livingRoomRot.conjugate().matrix();
 			
-			mat4 mirrorMatrix = mat4::Identity();
-			mirrorMatrix.Set(2, 2, -1);
-			livingRoomRot.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi));
-			livingRoom->Mmirror = mirrorMatrix * mat4::Translation(mirrorOver.x(), mirrorOver.y(), mirrorOver.z()) * livingRoomRot.matrix().Transpose();
-		}
+		mat4 mirrorMatrix = mat4::Identity();
+		mirrorMatrix.Set(2, 2, -1);
+		livingRoomRot.rotate(Kore::Quaternion(vec3(0, 0, 1), Kore::pi));
+		livingRoom->Mmirror = mirrorMatrix * mat4::Translation(mirrorOver.x(), mirrorOver.y(), mirrorOver.z()) * livingRoomRot.conjugate().matrix();
+		
 		
 		logger = new Logger();
 		
@@ -1061,6 +1324,11 @@ void record() {
 		endEffector[leftKnee] = new EndEffector(leftLegBoneIndex);
 		endEffector[rightKnee] = new EndEffector(rightLegBoneIndex);
 		initTransAndRot();
+
+		FABRIKSolver* fabrikSolver = dynamic_cast<FABRIKSolver*>(ikSolver);
+		if (fabrikSolver) {
+			fabrikSolver->addListener(&handleIkEvent);
+		}
 		
 #ifdef KORE_STEAMVR
 		VrInterface::init(nullptr, nullptr, nullptr); // TODO: Remove
@@ -1068,7 +1336,79 @@ void record() {
 	}
 }
 
+void logMat(Kore::mat4 m) {
+	for (size_t row = 0; row < 4; ++row) {
+		Kore::log(Kore::LogLevel::Info, "%5.2f\t%5.2f\t%5.2f\t%5.2f", m[0][row], m[1][row], m[2][row], m[3][row]);
+	}
+}
+
+void logln() {
+	Kore::log(Kore::LogLevel::Info, "");
+}
+
+void test() {
+	{
+		Kore::Quaternion i(1, 0, 0, 0);
+		Kore::Quaternion j(0, 1, 0, 0);
+
+		Kore::Quaternion mult = i;
+		mult.rotate(j);
+
+		Kore::log(Kore::LogLevel::Info, "%5.2f\t%5.2f\t%5.2f\t%5.2f\t%s", mult.w, mult.x, mult.y, mult.z, mult.z > 0 ? "Hamilton" : "Shuster");
+
+		logln();
+	}
+
+	{
+		Kore::mat4 m = Kore::Quaternion(0, 0, 1, 1).scaled(Kore::sqrt(0.5)).matrix();
+
+		logMat(m);
+
+		Kore::log(Kore::LogLevel::Info, "%s", m[0][1] > 0 && m[1][0] < 0 ? "Hamilton" : "Shuster");
+
+		logln();
+	}
+
+	Kore::Quaternion rot(Kore::vec3(1, 0, 0), Kore::pi / 2);
+
+	{
+		Kore::vec3 v(0, 1, 0);
+
+		Kore::vec3 resMat = Kore::mat3(rot.matrix()) * v;
+
+		Kore::log(Kore::LogLevel::Info, "mat\t\t%5.2f\t%5.2f\t%5.2f", resMat.x(), resMat.y(), resMat.z());
+
+		Kore::Quaternion resQuat = rot.invert() * Kore::Quaternion(v.x(), v.y(), v.z(), 0) * rot;
+
+		Kore::log(Kore::LogLevel::Info, "quat\t%5.2f\t%5.2f\t%5.2f", resQuat.x, resQuat.y, resQuat.z);
+
+		logln();
+	}
+
+	{
+		Kore::Quaternion rot2(Kore::vec3(0, 1, 0), Kore::pi / 2);
+
+		Kore::log(Kore::LogLevel::Info, "rot");
+		logMat(rot.matrix());
+		logln();
+
+		Kore::log(Kore::LogLevel::Info, "rot2");
+		logMat(rot2.matrix());
+		logln();
+
+		Kore::log(Kore::LogLevel::Info, "(rot * rot2).matrix()");
+		logMat((rot * rot2).matrix());
+		logln();
+
+		Kore::log(Kore::LogLevel::Info, "rot2.matrix() * rot.matrix()");
+		logMat(rot2.matrix() * rot.matrix());
+		logln();
+	}
+
+}
+
 int kickstart(int argc, char** argv) {
+	test();
 	System::init("BodyTracking", width, height);
 	
 	init();

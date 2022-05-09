@@ -1,6 +1,7 @@
 #include "QuatUtils.h"
 
 #include <cmath>
+#include "../Settings.h"
 
 Kore::Quaternion Kore::RotationUtility::fromTo(Kore::vec3 from, Kore::vec3 to) {
 	Kore::vec3 f(from);
@@ -9,10 +10,10 @@ Kore::Quaternion Kore::RotationUtility::fromTo(Kore::vec3 from, Kore::vec3 to) {
 	Kore::vec3 t(to);
 	t.normalize();
 
-	if (f == t) {
-		return Kore::Quaternion();
+	if (f.distance(t) <= Settings::nearNull) {
+		return Kore::Quaternion(0, 0, 0, 1);
 	}
-	else if (f == t * -1.0f) {
+	else if ((f + t).getLength() <= Settings::nearNull) {
 		Kore::vec3 ortho = Kore::vec3(1, 0, 0);
 		if (fabsf(f.y()) < fabsf(f.x())) {
 			ortho = Kore::vec3(0, 1, 0);

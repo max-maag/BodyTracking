@@ -95,11 +95,11 @@ void Logger::analyseHMM(const char* hmmName, double probability, bool newLine) {
 	hmmAnalysisWriter.flush();
 }
 
-void Logger::saveEvaluationData(std::string filename, std::shared_ptr<const IKSolver> solver, IKEvaluator::RunStatsAverage ikStatsTotal, std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector) {
+void Logger::saveEvaluationData(std::string filename, const IKSolver& solver, IKEvaluator::RunStatsAverage ikStatsTotal, std::array<IKEvaluator::RunStatsAverage, numEndEffectors> ikStatsPerEndEffector) {
 	
 	// Save settings
 	char evaluationDataPath[100];
-	sprintf(evaluationDataPath, "eval/evaluationData_IK_%s_%s", solver->getName().data(), filename.c_str());
+	sprintf(evaluationDataPath, "eval/evaluationData_IK_%s_%s", solver.getName().data(), filename.c_str());
 	
 	if (!evaluationDataOutputFile.is_open()) {
 		evaluationDataOutputFile.open(evaluationDataPath, std::ios::app);
@@ -129,13 +129,13 @@ void Logger::saveEvaluationData(std::string filename, std::shared_ptr<const IKSo
 		Kore::Info,
 		"%s \t IK: %s \t lambda: ? \t errorMaxPos: %f \t errorMaxRot: %f \t maxIterations: %f",
 		filename,
-		solver->getName(),
-		solver->getThresholdTargetReachedPosition(),
-		solver->getThresholdTargetReachedRotation(),
-		solver->getNumIterationsMax()
+		solver.getName(),
+		solver.getThresholdTargetReachedPosition(),
+		solver.getThresholdTargetReachedRotation(),
+		solver.getNumIterationsMax()
 	);
 
-	evaluationDataOutputFile << solver->getName()  << ";" << filename << ";" << "nan" << ";" << solver->getThresholdTargetReachedPosition() << ";" << solver->getThresholdTargetReachedRotation() << ";" << solver->getNumIterationsMax() << ";";
+	evaluationDataOutputFile << solver.getName()  << ";" << filename << ";" << "nan" << ";" << solver.getThresholdTargetReachedPosition() << ";" << solver.getThresholdTargetReachedRotation() << ";" << solver.getNumIterationsMax() << ";";
 
 	// Save mean and std for iterations
 	evaluationDataOutputFile << ikStatsTotal.numIterations.average << ";" << ikStatsTotal.numIterations.deviation << ";";

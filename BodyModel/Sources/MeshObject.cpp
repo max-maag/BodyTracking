@@ -119,7 +119,7 @@ namespace {
 	
 }
 
-MeshObject::MeshObject(const char* meshFile, const char* textureFile, const VertexStructure& structure, float scale) : textureDir(textureFile), structure(structure), scale(scale), M(mat4::Identity()) {
+MeshObject::MeshObject(const char* meshFile, const char* textureFile, const VertexStructure& structure, float scale) : textureDir(textureFile), structure(structure), scale(scale), M(mat4::Identity()), skeleton(new Skeleton()) {
 	
 	LoadObj(meshFile);
 	
@@ -188,8 +188,27 @@ void MeshObject::LoadObj(const char* filename) {
 	DataResult result = openGexDataDescription.ProcessText(buffer);
 	if (result == kDataOkay) {
 		ConvertObjects(*openGexDataDescription.GetRootStructure());
-		BoneNode* bone = new BoneNode();
-		ConvertNodes(*openGexDataDescription.GetRootStructure(), *bone);
+		BoneNode* boneRootDummy = new BoneNode();
+		
+		std::map<BoneNode*, std::vector<BoneNode*>> boneChildren;
+		std::vector<BoneNode*> boneOrder;
+		
+		ConvertNodes(*openGexDataDescription.GetRootStructure(), boneRootDummy, boneChildren, boneOrder);
+		
+		skeleton->bones.resize(boneOrder.size());
+
+		
+		for (size_t idxBone = 0; idxBone < boneOrder.size(); ++idxBone) {
+			BoneNode* bone = boneOrder[idxBone];
+
+			skeleton->bones[idxBone] = *bone;
+
+			for (auto child : boneChildren[bone]) {
+				child->parent = &skeleton->bones[idxBone];
+			}
+
+			delete bone;
+		}
 	} else {
 		log(Info, "Failed to load OpenGEX file");
 	}
@@ -228,8 +247,7 @@ void MeshObject::ConvertObjects(const Structure& rootStructure) {
 	}
 }
 
-void MeshObject::ConvertNodes(const Structure& rootStructure, BoneNode& parentNode) {
-	
+void MeshObject::ConvertNodes(const Structure& rootStructure, BoneNode* parentNode, std::map<BoneNode*, std::vector<BoneNode*>>& boneChildren, std::vector<BoneNode*>& boneOrder) {
 	const Structure* structure = rootStructure.GetFirstSubnode();
 	while (structure) {
 		const OGEX::NodeStructure& nodeStructure = *static_cast<const OGEX::NodeStructure*>(structure);
@@ -240,10 +258,18 @@ void MeshObject::ConvertNodes(const Structure& rootStructure, BoneNode& parentNo
 				
 			case OGEX::kStructureBoneNode: {
 				BoneNode* bone = ConvertBoneNode(static_cast<const OGEX::BoneNodeStructure&>(nodeStructure));
-				bone->parent = &parentNode;
-				bones.push_back(bone);
+				bone->parent = parentNode;
 				
-				ConvertNodes(*structure, *bone);
+				boneOrder.push_back(bone);
+
+				auto& parentChildren = boneChildren
+										.try_emplace(parentNode, std::vector<BoneNode*>())
+										.first->second;
+
+				parentChildren.push_back(bone);
+				
+
+				ConvertNodes(*structure, bone, boneChildren, boneOrder);
 				
 				break;
 			}
@@ -616,13 +642,13 @@ Light* MeshObject::ConvertLightNode(const OGEX::LightNodeStructure& structure) {
 
 void MeshObject::setScale(float scaleFactor) {
 	// Scale root bone
-	BoneNode* root = bones[0];
+	BoneNode& root = skeleton->bones[0];
 	
 	mat4 scaleMat = mat4::Identity();
 	scaleMat.Set(3, 3, 1.0 / scaleFactor);
 	
-	root->transform = root->transform * scaleMat; // T * R * S
-	root->local = root->transform;
+	root.transform = root.transform * scaleMat; // T * R * S
+	root.local = root.transform;
 	
 	scale = scaleFactor;
 }

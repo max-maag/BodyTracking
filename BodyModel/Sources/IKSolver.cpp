@@ -2,6 +2,7 @@
 
 #include <optional>
 #include "Settings.h"
+#include <Kore/Log.h>
 
 IKSolver::IKSolver(std::string_view name, unsigned int numIterationsMax, float thresholdTargetReachedPosition, float thresholdTargetReachedRotation) :
 	name(name),
@@ -14,6 +15,10 @@ IKSolver::~IKSolver() {
 }
 
 void IKSolver::solve(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget, IKEvaluator* evaluator) {
+	Kore::log(Kore::LogLevel::Info, "\n##############################################################################################\n");
+	Kore::log(Kore::LogLevel::Info, "%-40s%-40s% .6f  % .6f  % .6f", "IKSolver::solve", boneEndEffector->boneName, positionTarget.x(), positionTarget.y(), positionTarget.z());
+
+
 	auto stats = evaluator ? std::make_optional(evaluator->beginRun()) : std::nullopt;
 
 	unsigned int numIterations = 0;
@@ -47,9 +52,9 @@ void IKSolver::solve(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore:
 		if (stats) {
 			stats->endIteration();
 		}
-
-		afterIterations();
 	}
+
+	afterIterations();
 
 	if (stats) {
 		stats->endRun(errorPosition, errorOrientation, hasReachedTarget, isStuck);
