@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include "Kore/Math/Core.h"
 
 const std::array<std::string, 7> Settings::files{ "walking.csv", "lunges.csv", "squats.csv", "kicks.csv", "yoga1.csv", "yoga2.csv", "yoga3.csv" };
 //const int numFiles = 16;
