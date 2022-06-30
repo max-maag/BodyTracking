@@ -1,6 +1,5 @@
 #pragma once
 
-#include <Kore/Math/Core.h>
 #include <array>
 #include <string>
 
