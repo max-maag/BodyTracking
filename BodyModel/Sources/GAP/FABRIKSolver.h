@@ -12,7 +12,7 @@ public:
 		IterationStepComplete, IterationComplete, SolveComplete
 	};
 
-	typedef std::function<void(EventType, std::unordered_map<const BoneNode*, Kore::vec3>)> EventListener;
+	using EventListener = std::function<void(EventType, std::unordered_map<const BoneNode*, Kore::vec3>)>;
 
 private:
 	/* The IK chain.

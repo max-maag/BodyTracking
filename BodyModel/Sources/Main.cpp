@@ -129,15 +129,15 @@ namespace {
 	} renderOptions;
 
 	bool isDebuggingIk = false;
-	std::vector<Kore::vec3> debugIkPositions;
+
+	// Contains the skeleton overlay's current bone positions during IK debugging.
+	std::vector<Kore::vec3> ikStepBonePositions;
 
 	// If true, pause animation of non-VR play-back
 	bool shouldPauseAnimation = true;
 
 	// If true, pause after next frame of non-VR play-back
 	bool shouldStepAnimation = false;
-
-	size_t idxBoneDisplay = 0;
 	
 	EndEffector** endEffector;
 	const int numOfEndEffectors = 10;
@@ -212,7 +212,8 @@ namespace {
 	Kravur* fontOpenSans32;
 	Kravur* fontOpenSans20;
 
-	std::queue<std::unordered_map<const BoneNode*, Kore::vec3>> ikSteps;
+	// For each IK step contains a map describing changes to the skeleton. Empty unless debugging IK.
+	std::queue<std::unordered_map<const BoneNode*, Kore::vec3>> ikStepBoneUpdates;
 	
 	bool calibratedAvatar = false;
 	
@@ -631,34 +632,7 @@ void record() {
 
 
 	void handleIkEvent(FABRIKSolver::EventType eventType, std::unordered_map<const BoneNode*, Kore::vec3> jointPositions) {
-		ikSteps.push(jointPositions);
-	}
-
-	void renderBones(Kore::mat4 V, Kore::mat4 P) {
-		Kore::Graphics4::setPipeline(pipeline);
-		Kore::Graphics4::setMatrix(pLocation, P);
-		Kore::Graphics4::setMatrix(vLocation, V);
-		
-		for (size_t idxBone = 0; idxBone < avatar->skeleton->bones.size(); ++idxBone) {
-			BoneNode& bone = avatar->skeleton->bones[idxBone];
-
-			bone.initialize();
-
-			renderAxes(
-				getBoneTransform(bone) *
-				//mat4::Scale(0.5f, 6 * boneLength, 0.5f)
-				mat4::Scale(0.5f)
-			);
-		}
-		
-		BoneNode& bone = avatar->skeleton->bones[idxBoneDisplay];
-
-		vec3 pos = bone.getPosition();
-
-		Kore::Quaternion q;
-		RotationUtility::getOrientation(&bone.combined, &q);
-
-		renderAxes(transformationAvatarToWorld * mat4::Translation(pos.x(), pos.y(), pos.z()) * q.conjugate().matrix() * mat4::Scale(3.f));
+		ikStepBoneUpdates.push(jointPositions);
 	}
 
 	bool shouldAdvanceAnimation(float timeSinceStart) {
@@ -668,8 +642,8 @@ void record() {
 	// overlayRenderer.begin() must be called before
 	void renderSkeletonOverlay() {
 		auto getPos = [](const BoneNode& bone) {
-			if (isDebuggingIk && !debugIkPositions.empty()) {
-				return v4(debugIkPositions[bone.nodeIndex - 1]);
+			if (isDebuggingIk && !ikStepBonePositions.empty()) {
+				return v4(ikStepBonePositions[bone.nodeIndex - 1]);
 			}
 			else {
 				return v4(bone.getPosition());
@@ -914,27 +888,29 @@ void record() {
 			}
 		}
 #else
-		if (isDebuggingIk && !ikSteps.empty()) {
-			if (debugIkPositions.empty()) {
-				debugIkPositions.resize(avatar->skeleton->bones.size());
+		if (isDebuggingIk && !ikStepBoneUpdates.empty()) {
+			// initialize current IK debugging skeleton to actual skeleton
+			if (ikStepBonePositions.empty()) {
+				ikStepBonePositions.resize(avatar->skeleton->bones.size());
 
 				for (size_t idxBone = 0; idxBone < avatar->skeleton->bones.size(); ++idxBone) {
-					debugIkPositions[idxBone] = avatar->skeleton->bones[idxBone].getPosition();
+					ikStepBonePositions[idxBone] = avatar->skeleton->bones[idxBone].getPosition();
 				}
 			}
 
-			for (const auto& pair : ikSteps.front()) {
+			// apply changes of first IK step
+			for (const auto& pair : ikStepBoneUpdates.front()) {
 				const BoneNode* bone = pair.first;
 				Kore::vec3 position = pair.second;
 
-				debugIkPositions[bone->nodeIndex - 1] = position;
+				ikStepBonePositions[bone->nodeIndex - 1] = position;
 			}
 
-			ikSteps.pop();
+			ikStepBoneUpdates.pop();
 		}
 		else if (shouldAdvanceAnimation(timeSinceStart)) {
 				loadNextAnimationFrame(timeSinceStart);
-				debugIkPositions.clear();
+				ikStepBonePositions.clear();
 		}
 
 		//std::swap(avatar->skeleton, skeletonAvatarIk);
@@ -1093,7 +1069,7 @@ void record() {
 		if (isDebuggingIk) {
 			shouldStepAnimation = true;
 		} else {
-			debugIkPositions.clear();
+			ikStepBonePositions.clear();
 		}
 		/*
 		FABRIKSolver* fabrikSolver = dynamic_cast<FABRIKSolver*>(ikSolver);
@@ -1144,19 +1120,6 @@ void record() {
 				break;
 			case KeyI:
 				toggleIkDebugging();
-				break;
-			case KeyPageUp:
-				if (++idxBoneDisplay >= avatar->skeleton->bones.size()) {
-					idxBoneDisplay = 0;
-				}
-				break;
-			case KeyPageDown:
-				if (idxBoneDisplay == 0) {
-					idxBoneDisplay = avatar->skeleton->bones.size() - 1;
-				}
-				else {
-					idxBoneDisplay--;
-				}
 				break;
 				
 			default:
