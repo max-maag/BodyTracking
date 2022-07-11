@@ -889,8 +889,8 @@ void record() {
 		}
 #else
 		if (isDebuggingIk && !ikStepBoneUpdates.empty()) {
-			// initialize current IK debugging skeleton to actual skeleton
 			if (ikStepBonePositions.empty()) {
+				// initialize current IK debugging skeleton to actual skeleton
 				ikStepBonePositions.resize(avatar->skeleton->bones.size());
 
 				for (size_t idxBone = 0; idxBone < avatar->skeleton->bones.size(); ++idxBone) {
@@ -898,7 +898,7 @@ void record() {
 				}
 			}
 
-			// apply changes of first IK step
+			// apply changes of next IK step
 			for (const auto& pair : ikStepBoneUpdates.front()) {
 				const BoneNode* bone = pair.first;
 				Kore::vec3 position = pair.second;
@@ -1071,6 +1071,7 @@ void record() {
 		} else {
 			ikStepBonePositions.clear();
 		}
+		
 		/*
 		FABRIKSolver* fabrikSolver = dynamic_cast<FABRIKSolver*>(ikSolver);
 		
@@ -1079,10 +1080,11 @@ void record() {
 				fabrikSolver->addListener(&handleIkEvent);
 			}
 			else {
-				fabrikSolver->removeListener(&handleIkEvent);
+				//fabrikSolver->removeListener(&handleIkEvent);
 			}
 		}
 		*/
+		
 	}
 
 	void keyUp(KeyCode code) {
