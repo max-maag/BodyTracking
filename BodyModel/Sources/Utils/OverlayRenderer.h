@@ -52,6 +52,7 @@ namespace utils {
 		Kore::vec2 worldToScreen(Kore::vec4 positionWorld3d) const;
 
 	public:
+
 		// width and height in pixels
 		OverlayRenderer(unsigned int widthScreen, unsigned int heightScreen);
 
@@ -108,5 +109,14 @@ namespace utils {
 		 *		color:		The text's color.
 		 */
 		void drawText(std::string_view text, Kore::vec4 position3d, Kore::vec2 offset2D = Kore::vec2(0, 0), Kore::uint color = Kore::Graphics2::Color::White);
+
+		/* Draw a text with screen coordinates.
+		 *
+		 * Arguments:
+		 *		text:		The text to draw.
+		 *		position2d:	Start of the text in pixel space.
+		 *		color:		The text's color.
+		 */
+		void drawText2D(std::string_view text, Kore::vec2 position2d, Kore::uint color = Kore::Graphics2::Color::White);
 	};
 }

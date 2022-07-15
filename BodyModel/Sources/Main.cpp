@@ -82,7 +82,7 @@ namespace {
 
 		
 		//std::make_shared<JacobianIK>(JacobianIKMode::JT,		30,		0.01,	0.01)
-		std::make_shared<FABRIKSolver>(10, 0.1, 0.1)
+		std::make_shared<FABRIKSolver>(10, 0.1, 0.01)
 	};
 
 	 IKSolver* ikSolver = &*IK_SOLVERS.front();
@@ -132,6 +132,8 @@ namespace {
 
 	// Contains the skeleton overlay's current bone positions during IK debugging.
 	std::vector<Kore::vec3> ikStepBonePositions;
+
+	FABRIKSolver::DebugEvent currentIkEvent;
 
 	// If true, pause animation of non-VR play-back
 	bool shouldPauseAnimation = true;
@@ -213,7 +215,7 @@ namespace {
 	Kravur* fontOpenSans20;
 
 	// For each IK step contains a map describing changes to the skeleton. Empty unless debugging IK.
-	std::queue<std::unordered_map<const BoneNode*, Kore::vec3>> ikStepBoneUpdates;
+	std::queue<FABRIKSolver::DebugEvent> fabrikDebugEvents;
 	
 	bool calibratedAvatar = false;
 	
@@ -631,8 +633,10 @@ void record() {
 #endif
 
 
-	void handleIkEvent(FABRIKSolver::EventType eventType, std::unordered_map<const BoneNode*, Kore::vec3> jointPositions) {
-		ikStepBoneUpdates.push(jointPositions);
+	void handleIkEvent(FABRIKSolver::DebugEvent event) {
+		if (isDebuggingIk) {
+			fabrikDebugEvents.push(event);
+		}
 	}
 
 	bool shouldAdvanceAnimation(float timeSinceStart) {
@@ -650,6 +654,7 @@ void record() {
 			}
 		};
 
+		// draw bones and joints
 		for (const BoneNode& bone : avatar->skeleton->bones) {
 			if (bone.initialized) {
 				const bool isFingerBone = bone.nodeIndex == leftThumbIndex || bone.nodeIndex == leftFingerBaseIndex || bone.nodeIndex == leftFingerIndex ||
@@ -672,6 +677,29 @@ void record() {
 				}
 			}
 		}
+
+		if (isDebuggingIk) {
+			// draw target
+			overlayRenderer.drawSquare(transformationAvatarToWorld * v4(currentIkEvent.positionTarget), 13, Kore::Graphics2::Color::Blue);
+
+			// draw current chain
+			for (size_t indexPosition = 1; indexPosition < currentIkEvent.jointPositions.size(); ++indexPosition) {
+				overlayRenderer.drawLine(
+					transformationAvatarToWorld * v4(currentIkEvent.jointPositions[indexPosition-1]),
+					transformationAvatarToWorld * v4(currentIkEvent.jointPositions[indexPosition]),
+					3,
+					Kore::Graphics2::Color::Cyan);
+			}
+
+			// draw current bone and its old position
+			if (currentIkEvent.eventType == FABRIKSolver::DebugEvent::Type::IterationStepComplete) {
+				Kore::vec4 positionParent = transformationAvatarToWorld * v4(ikStepBonePositions[currentIkEvent.bone->parent->nodeIndex - 1]);
+
+				overlayRenderer.drawLine(positionParent, transformationAvatarToWorld * v4(currentIkEvent.positionBefore), 3, 0xFF666666);
+
+				overlayRenderer.drawLine(positionParent, transformationAvatarToWorld * v4(currentIkEvent.position), 3, Kore::Graphics2::Color::Yellow);
+			}
+		}
 	}
 
 
@@ -687,6 +715,53 @@ void record() {
 			if (renderOptions.overlay.endEffectors.names) {
 				overlayRenderer.drawText(endEffector[i]->getName(), position, Kore::vec2(0, 3));
 			}
+		}
+	}
+
+	void renderIkDebugText() {
+		std::string text = "Current step: ";
+
+		switch (currentIkEvent.eventType) {
+		case FABRIKSolver::DebugEvent::Type::SolveBegin:
+			text += "Solve begin";
+			break;
+
+		case FABRIKSolver::DebugEvent::Type::IterationStepComplete:
+			text += "Iteration step complete";
+			break;
+
+		case FABRIKSolver::DebugEvent::Type::IterationComplete:
+			text += "Iteration complete";
+			break;
+
+		case FABRIKSolver::DebugEvent::Type::SolveComplete:
+			text += "Solve complete";
+			break;
+
+		default:
+			text += "?";
+			break;
+		}
+
+		overlayRenderer.drawText2D(text, Kore::vec2(5, 5));
+
+
+		text = "Chain: "; 
+		
+		if (currentIkEvent.chain.empty()) {
+			text += "empty";
+		}
+		else {
+			text += currentIkEvent.chain.front()->boneName + " -> "s + currentIkEvent.chain.back()->boneName;
+		}
+
+		overlayRenderer.drawText2D(text, Kore::vec2(5, 25));
+
+
+		if (currentIkEvent.eventType == FABRIKSolver::DebugEvent::Type::IterationStepComplete) {
+			text = "Current bone: "s + currentIkEvent.bone->boneName;
+
+			overlayRenderer.drawText2D(text, Kore::vec2(5, 45));
 		}
 	}
 
@@ -706,6 +781,10 @@ void record() {
 		overlayRenderer.drawLine(Kore::vec4(0, 0, 0, 1), Kore::vec4(0.1, 0, 0, 1), 3, Kore::Graphics2::Color::Red);
 		overlayRenderer.drawLine(Kore::vec4(0, 0, 0, 1), Kore::vec4(0, 0.1, 0, 1), 3, Kore::Graphics2::Color::Green);
 		overlayRenderer.drawLine(Kore::vec4(0, 0, 0, 1), Kore::vec4(0, 0, 0.1, 1), 3, Kore::Graphics2::Color::Blue);
+
+		if (isDebuggingIk) {
+			renderIkDebugText();
+		}
 
 		overlayRenderer.end();
 	}
@@ -888,29 +967,35 @@ void record() {
 			}
 		}
 #else
-		if (isDebuggingIk && !ikStepBoneUpdates.empty()) {
+		if (isDebuggingIk && !fabrikDebugEvents.empty()) {
 			if (ikStepBonePositions.empty()) {
-				// initialize current IK debugging skeleton to actual skeleton
 				ikStepBonePositions.resize(avatar->skeleton->bones.size());
 
+				// set current IK debugging skeleton to actual skeleton
 				for (size_t idxBone = 0; idxBone < avatar->skeleton->bones.size(); ++idxBone) {
 					ikStepBonePositions[idxBone] = avatar->skeleton->bones[idxBone].getPosition();
 				}
 			}
 
-			// apply changes of next IK step
-			for (const auto& pair : ikStepBoneUpdates.front()) {
-				const BoneNode* bone = pair.first;
-				Kore::vec3 position = pair.second;
+			currentIkEvent = fabrikDebugEvents.front();
 
-				ikStepBonePositions[bone->nodeIndex - 1] = position;
+			for (size_t idxIkChain = 0; idxIkChain < currentIkEvent.chain.size(); ++idxIkChain) {
+				ikStepBonePositions[currentIkEvent.chain[idxIkChain]->nodeIndex - 1] = currentIkEvent.jointPositions[idxIkChain];
 			}
-
-			ikStepBoneUpdates.pop();
+			/*
+			if (currentIkEvent.eventType == FABRIKSolver::DebugEvent::Type::IterationStepComplete) {
+				ikStepBonePositions[currentIkEvent.bone->nodeIndex - 1] = currentIkEvent.position;
+			}
+			*/
+			
+			fabrikDebugEvents.pop();
 		}
-		else if (shouldAdvanceAnimation(timeSinceStart)) {
+		else {
+			ikStepBonePositions.clear();
+
+			if (shouldAdvanceAnimation(timeSinceStart)) {
 				loadNextAnimationFrame(timeSinceStart);
-				ikStepBonePositions.clear();
+			}
 		}
 
 		//std::swap(avatar->skeleton, skeletonAvatarIk);
@@ -1070,6 +1155,11 @@ void record() {
 			shouldStepAnimation = true;
 		} else {
 			ikStepBonePositions.clear();
+
+			// clear event queue
+			while (!fabrikDebugEvents.empty()) {
+				fabrikDebugEvents.pop();
+			}
 		}
 		
 		/*
@@ -1235,7 +1325,6 @@ void record() {
 		//avatar = new Avatar("avatar/avatar_female.ogex", "avatar/", structure, IK_SOLVERS[ikMode]);
 		
 		skeletonAvatarIk = avatar->skeleton; // new Skeleton();
-
 
 		// Set camera initial position and orientation
 		cameraPos = vec3(2.6, 1.8, 0.0);

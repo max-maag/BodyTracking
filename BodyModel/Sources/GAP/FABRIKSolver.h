@@ -8,11 +8,23 @@
 
 class FABRIKSolver : public IKSolver {
 public:
-	enum class EventType {
-		IterationStepComplete, IterationComplete, SolveComplete
+
+	struct DebugEvent {
+		enum class Type {
+			SolveBegin, IterationStepComplete, IterationComplete, SolveComplete
+		};
+
+		Type eventType;
+
+		std::vector<BoneNode*> chain;
+		BoneNode* bone = nullptr;
+		Kore::vec3 position;
+		Kore::vec3 positionBefore;
+		Kore::vec3 positionTarget;
+		std::vector<Kore::vec3> jointPositions;
 	};
 
-	using EventListener = std::function<void(EventType, std::unordered_map<const BoneNode*, Kore::vec3>)>;
+	using EventListener = std::function<void(DebugEvent)>;
 
 private:
 	/* The IK chain.
@@ -31,7 +43,7 @@ private:
 
 	std::vector<EventListener> eventListeners;
 
-	void fireEvent(EventType eventType);
+	void fireEvent(DebugEvent event);
 
 protected:
 	void beforeIterations(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget) override;

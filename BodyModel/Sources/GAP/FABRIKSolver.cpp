@@ -10,7 +10,7 @@ FABRIKSolver::FABRIKSolver(unsigned int numIterationsMax, float thresholdTargetR
 	IKSolver("FABRIK", numIterationsMax, thresholdTargetReachedPosition, thresholdTargetReachedRotation) {
 }
 
-//*
+
 void FABRIKSolver::WorldToIKChain() {
 	Kore::log(Kore::LogLevel::Info, "");
 
@@ -55,22 +55,22 @@ void FABRIKSolver::WorldToIKChain() {
 void FABRIKSolver::WorldToIKChain() {
 	size_t size = mIKChain.size();
 
-	for (size_t i = 0; i < size - 1; ++i) {
-		Kore::vec3 positionActual = mIKChain[i]->parent->getPosition();
-		Kore::Quaternion rotationActual = mIKChain[i]->parent->getOrientation();
+	for (size_t indexJoint = 0; indexJoint < size - 1; ++indexJoint) {
+		Kore::vec3 positionActual = mIKChain[indexJoint]->parent->getPosition();
+		Kore::Quaternion rotationActual = mIKChain[indexJoint]->parent->getOrientation();
 		Kore::mat3 rotMat(rotationActual.invert().matrix());
 
-		Kore::vec3 toNext = mIKChain[i]->getPosition() - positionActual;
+		Kore::vec3 toNext = mIKChain[indexJoint]->getPosition() - positionActual;
 		toNext = rotMat * toNext;
 
-		Kore::vec3 toDesired = jointWorldPositions[i] - positionActual;
+		Kore::vec3 toDesired = jointWorldPositions[indexJoint] - positionActual;
 		toDesired = rotMat * toDesired;
 
 		Kore::Quaternion delta = Kore::RotationUtility::fromTo(toNext, toDesired);
-		mIKChain[i]->rotation.rotate(delta);
+		mIKChain[indexJoint]->rotation.rotate(delta);
 
-		mIKChain[i]->calculateLocal();
-		mIKChain[i]->update();
+		mIKChain[indexJoint]->calculateLocal();
+		mIKChain[indexJoint]->update();
 	}
 }
 //*/
@@ -109,6 +109,16 @@ void FABRIKSolver::beforeIterations(BoneNode* boneEndEffector, Kore::vec3 positi
 	if (mIKChain.empty()) {
 		Kore::log(Kore::LogLevel::Info, "Solve called on empty chain!");
 	}
+
+	DebugEvent event;
+
+	event.eventType = DebugEvent::Type::SolveBegin;
+	event.chain = mIKChain;
+	event.position = rootWorldPosition;
+	event.positionTarget = positionTarget;
+	event.jointPositions = jointWorldPositions;
+
+	fireEvent(event);
 }
 
 void FABRIKSolver::iterate(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget) {
@@ -120,18 +130,31 @@ void FABRIKSolver::iterate(BoneNode* boneEndEffector, Kore::vec3 positionTarget,
 	IterateBackward(positionTarget);
 	IterateForward(rootWorldPosition);
 
-	fireEvent(EventType::IterationComplete);
+	DebugEvent event;
+
+	event.eventType = DebugEvent::Type::IterationComplete;
+	event.positionTarget = positionTarget;
+	event.chain = mIKChain;
+	event.jointPositions = jointWorldPositions;
+
+	fireEvent(event);
 }
 
 void FABRIKSolver::afterIterations() {
 	Kore::log(Kore::LogLevel::Info, "%-40s", "FABRIKSolver::afterIterations");
-	if (mIKChain.empty()) {
-		return;
-	}
-
-	fireEvent(EventType::SolveComplete);
 
 	WorldToIKChain();
+
+	DebugEvent event;
+
+	event.eventType = DebugEvent::Type::SolveComplete;
+	event.chain = mIKChain;
+	
+	for (const BoneNode* bone: mIKChain) {
+		event.jointPositions.push_back(bone->getPosition());
+	}
+
+	fireEvent(event);
 
 	mIKChain.clear();
 	boneLengths.clear();
@@ -143,16 +166,35 @@ void FABRIKSolver::IterateBackward(const Kore::vec3& goal) {
 	size_t size = mIKChain.size();
 
 	if (size > 0) {
+		DebugEvent event;
+
+		event.eventType = DebugEvent::Type::IterationStepComplete;
+		event.bone = mIKChain.back();
+		event.position = goal;
+		event.positionBefore = jointWorldPositions[size - 1];
+		event.positionTarget = goal;
+		event.chain = mIKChain;
+
 		jointWorldPositions[size - 1] = goal;
 
-		fireEvent(EventType::IterationStepComplete);
 
-		for (size_t i = size - 1; i > 0; --i) {
-			Kore::vec3 direction = (jointWorldPositions[i - 1] - jointWorldPositions[i]).normalize();
-			Kore::vec3 offset = direction * boneLengths[i];
-			jointWorldPositions[i - 1] = jointWorldPositions[i] + offset;
+		event.jointPositions = jointWorldPositions;
 
-			fireEvent(EventType::IterationStepComplete);
+		fireEvent(event);
+
+		for (size_t indexJoint = size - 1; indexJoint > 0; --indexJoint) {
+			event.eventType = DebugEvent::Type::IterationStepComplete;
+			event.bone = mIKChain[indexJoint - 1];
+			event.positionBefore = jointWorldPositions[indexJoint - 1];
+
+			Kore::vec3 direction = (jointWorldPositions[indexJoint - 1] - jointWorldPositions[indexJoint]).normalize();
+			Kore::vec3 offset = direction * boneLengths[indexJoint];
+			jointWorldPositions[indexJoint - 1] = jointWorldPositions[indexJoint] + offset;
+
+			event.position = jointWorldPositions[indexJoint - 1];
+			event.jointPositions = jointWorldPositions;
+
+			fireEvent(event);
 		}
 	}
 }
@@ -162,17 +204,35 @@ void FABRIKSolver::IterateForward(const Kore::vec3& base) {
 	size_t size = mIKChain.size();
 
 	if (size > 0) {
+		DebugEvent event;
+
+		event.eventType = DebugEvent::Type::IterationStepComplete;
+		event.bone = mIKChain.front();
+		event.position = base;
+		event.positionBefore = jointWorldPositions[0];
+		event.positionTarget = base;
+		event.chain = mIKChain;
+
 		jointWorldPositions[0] = base;
 
-		fireEvent(EventType::IterationStepComplete);
-	}
+		event.jointPositions = jointWorldPositions;
 
-	for (size_t i = 1; i < size; ++i) {
-		Kore::vec3 direction = (jointWorldPositions[i] - jointWorldPositions[i - 1]).normalize();
-		Kore::vec3 offset = direction * boneLengths[i];
-		jointWorldPositions[i] = jointWorldPositions[i - 1] + offset;
+		fireEvent(event);
 
-		fireEvent(EventType::IterationStepComplete);
+		for (size_t indexJoint = 1; indexJoint < size; ++indexJoint) {
+			event.eventType = DebugEvent::Type::IterationStepComplete;
+			event.bone = mIKChain[indexJoint];
+			event.positionBefore = jointWorldPositions[indexJoint];
+
+			Kore::vec3 direction = (jointWorldPositions[indexJoint] - jointWorldPositions[indexJoint - 1]).normalize();
+			Kore::vec3 offset = direction * boneLengths[indexJoint];
+			jointWorldPositions[indexJoint] = jointWorldPositions[indexJoint - 1] + offset;
+
+			event.position = jointWorldPositions[indexJoint];
+			event.jointPositions = jointWorldPositions;
+
+			fireEvent(event);
+		}
 	}
 }
 
@@ -185,18 +245,12 @@ void FABRIKSolver::removeListener(EventListener& listener) {
 }
 */
 
-void FABRIKSolver::fireEvent(EventType eventType) {
+void FABRIKSolver::fireEvent(DebugEvent event) {
 	if (eventListeners.empty()) {
 		return;
 	}
 
-	std::unordered_map<const BoneNode*, Kore::vec3> bonePositions;
-
-	for (size_t idxBone = 0; idxBone < mIKChain.size(); ++idxBone) {
-		bonePositions.emplace(mIKChain[idxBone], jointWorldPositions[idxBone]);
-	}
-
 	for (EventListener listener : eventListeners) {
-		listener(eventType, bonePositions);
+		listener(event);
 	}
 }

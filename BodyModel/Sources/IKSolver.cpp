@@ -14,7 +14,7 @@ IKSolver::~IKSolver() {
 	// Nothing to do.
 }
 
-void IKSolver::solve(BoneNode* boneEndEffector, Kore::vec3 positionTarget, Kore::Quaternion orientationTarget, IKEvaluator* evaluator) {
+void IKSolver::solve(BoneNode* boneEndEffector, const Kore::vec3 positionTarget, const Kore::Quaternion orientationTarget, IKEvaluator* evaluator) {
 	Kore::log(Kore::LogLevel::Info, "\n##############################################################################################\n");
 	Kore::log(Kore::LogLevel::Info, "%-40s%-40s% .6f  % .6f  % .6f", "IKSolver::solve", boneEndEffector->boneName, positionTarget.x(), positionTarget.y(), positionTarget.z());
 

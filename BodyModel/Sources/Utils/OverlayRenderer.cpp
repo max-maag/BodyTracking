@@ -67,4 +67,10 @@ namespace utils {
 
 		graphics2->drawString(text.data(), text.size(), positionScreen.x(), positionScreen.y());
 	}
+
+	void OverlayRenderer::drawText2D(std::string_view text, Kore::vec2 position2d, Kore::uint color) {
+		graphics2->setFontColor(color);
+
+		graphics2->drawString(text.data(), text.size(), position2d.x(), position2d.y());
+	}
 }
